@@ -1,0 +1,9 @@
+## Interface: 30300
+## Title: AutoRoll|cffff77c8Lite|r
+## Notes: Auto Need on rare/epic, Greed on uncommon. Lightweight, no taint.
+## Author: Tony
+## Version: 1.0.0
+## SavedVariables: AutoRollLiteDB
+## IconTexture: Interface\Icons\Ability_Hunter_Pet_Boar
+
+AutoRollLite.lua
