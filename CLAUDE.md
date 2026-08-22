@@ -55,9 +55,9 @@ Run it after any change to `A:Decide`, the queue, or the ownership logic. Note i
 
 Timing assertions must tolerate tick quantization: fire times are exact, but the `OnUpdate` throttle is 0.1s, so a 0.25s stagger produces observed gaps of 0.2–0.3s.
 
-## In-game installation
+## In-game notes
 
-Copy `AutoRollLite/` into `Interface/AddOns/`. Then:
+The WoW client is on a **separate Windows machine**, not this Mac — it's already installed and wired up there, so treat in-game verification as something the user runs, not something you can do or need to give setup steps for.
 
 - Run `/console scriptErrors 1` before any testing — 3.3.5 silently swallows Lua errors otherwise.
 - Set `delay` to `3` for first runs so the default UI frame is visibly dismissed, confirming the roll landed rather than timing out.
