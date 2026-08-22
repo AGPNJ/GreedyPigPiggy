@@ -220,6 +220,26 @@ slotsConfirmed = {}
 fire("LOOT_BIND_CONFIRM", 3)
 check("confirms again once un-blacklisted", slotsConfirmed[1] == 3, slotsConfirmed[1])
 
+print("\n-- FR-4: BoP confirmation arrives synchronously inside RollOnLoot")
+-- The real 3.3.5 client raises CONFIRM_LOOT_ROLL from inside RollOnLoot when
+-- you Need a BoP item -- it knows the item binds, so there is no server round
+-- trip. Any ownership bookkeeping done *after* the RollOnLoot call is therefore
+-- too late to recognise the confirmation as ours.
+reset()
+confirmed, popupsHidden = {}, {}
+local realRoll = RollOnLoot
+function RollOnLoot(id, t)
+    realRoll(id, t)
+    if rolls[id] and rolls[id].bop and t == 1 then fire("CONFIRM_LOOT_ROLL", id, t) end
+end
+drop(90, 3, { bop = 1 })
+advance(1)
+check("Need submitted on BoP blue", only(90)[1] == 1, only(90)[1])
+check("synchronous confirmation is recognised as ours", confirmed[1] and confirmed[1].id == 90,
+    confirmed[1] and confirmed[1].id or "never confirmed")
+check("popup dismissed", popupsHidden[1] == "CONFIRM_LOOT_ROLL", popupsHidden[1])
+RollOnLoot = realRoll
+
 print("\n-- FR-4: confirmations for rolls we do not own are ignored")
 reset()
 confirmed = {}

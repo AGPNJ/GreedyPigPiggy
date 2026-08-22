@@ -194,10 +194,14 @@ function A:Execute(rollID, e)
         return self:Record(PASS, what, reason .. "; left to user")
     end
 
+    -- Claim ownership BEFORE rolling. The client raises CONFIRM_LOOT_ROLL from
+    -- inside RollOnLoot for a BoP Need -- it knows the item binds, so there is
+    -- no server round trip -- and A:Confirm would not recognise the popup as
+    -- ours if we recorded it on the line after. Then the popup just sits there.
+    self.ours[rollID] = action
     self.inFlight = true
     RollOnLoot(rollID, action)
     self.inFlight = false
-    self.ours[rollID] = action
 
     self:Record(action, what, reason)
     if not self.db.quiet then
