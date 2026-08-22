@@ -65,11 +65,23 @@ Copy `AutoRollLite/` into `Interface/AddOns/`. Then:
 - §8 of the spec lists 10 acceptance criteria — use them as the test plan.
 - AzerothCore configs can alter need-before-greed rules and DE availability. When `reasonNeed`/`reasonGreed` codes look wrong, dump them raw in debug mode rather than trusting wiki enums.
 
+## The two "will bind it to you" popups
+
+3.3.5 shows the same `LOOT_NO_DROP` text ("Looting this item will bind it to you.") for two unrelated popups, which makes them easy to conflate when one leaks through:
+
+| Popup | Event | Fires when | Cleared with |
+|---|---|---|---|
+| `CONFIRM_LOOT_ROLL` | `CONFIRM_LOOT_ROLL(rollID, rollType)` | you *roll* Need on a BoP item | `ConfirmLootRoll(rollID, rollType)` |
+| `LOOT_BIND` | `LOOT_BIND_CONFIRM(slot)` | you *pick the item up* | `ConfirmLootSlot(slot)` |
+
+They take different arguments and different clearing functions — `ConfirmLootRoll` will not dismiss the `LOOT_BIND` popup. Handled by `A:Confirm` and `A:ConfirmBind` respectively. Both go through `A:Allowed()`, so `instanceOnly` and the master switch govern them too.
+
 ## Deliberate deviations from the spec
 
 - **`db.autoPass` (default `false`)** — the spec's decision matrix says "Pass" for poor/common but never says whether to *submit* Pass or simply not act. Default is to leave the frame alone so the player still has a choice; set `autoPass on` to actively submit Pass. A blacklisted item is never rolled on either way.
 - **`SLASH_AUTOROLLLITE1`/`2` globals** — FR-8's "exactly one global" can't be honored literally; the slash API requires these. `SlashCmdList` is a Blizzard table, so indexing it adds no global.
 - **`/arl stagger <s>`** — `db.stagger` was configurable per FR-3 but had no listed command.
+- **`LOOT_BIND_CONFIRM` handling (`db.autoConfirmBind`, default `true`)** — the spec's event table stops at the roll confirmations, but the pickup-time bind popup still interrupts a dungeon clear. Scoped by `A:Allowed()` and skipped for `db.never` items, so `/arl never` still means "ask me". Turn off with `/arl bind off`.
 - **`## IconTexture` in the TOC** — retail-only directive, silently ignored by 3.3.5. Harmless, kept for tooling.
 
 ## Non-goals

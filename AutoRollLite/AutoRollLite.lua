@@ -27,6 +27,7 @@ local defaults = {
     instanceOnly = true, raidEnabled = false,
     bopProtection = false, allowDisenchant = false,
     autoPass = false,                       -- submit Pass, or leave frame to user
+    autoConfirmBind = true,                 -- auto-accept the "will bind to you" popup
     quiet = false, debug = false,
 }
 
@@ -37,6 +38,7 @@ local TOGGLES = {
     bop      = { "bopProtection",   "BoP protection" },
     de       = { "allowDisenchant", "disenchant fallback" },
     autopass = { "autoPass",        "auto-submit Pass" },
+    bind     = { "autoConfirmBind", "auto-confirm bind popup" },
     quiet    = { "quiet",           "quiet mode" },
     debug    = { "debug",           "debug logging" },
 }
@@ -257,6 +259,34 @@ function A:Confirm(rollID, rollType, source)
     self:Debug(source .. " auto-confirmed for roll " .. tostring(rollID))
 end
 
+--[[ "Looting this item will bind it to you." -- the OTHER one.
+     Two different popups share the LOOT_NO_DROP text in 3.3.5:
+       CONFIRM_LOOT_ROLL  fires when you roll Need on a BoP item  (above)
+       LOOT_BIND          fires when you actually pick the item up
+     The second arrives as LOOT_BIND_CONFIRM(slot) and is cleared with
+     ConfirmLootSlot(slot), not ConfirmLootRoll. Gated by the same scope
+     rules as rolling so it can never fire in the open world by accident,
+     and skipped for blacklisted items so /arl never still means "ask me".]]
+
+function A:ConfirmBind(slot)
+    if not self.db.autoConfirmBind then return end
+
+    local ok, why = self:Allowed()
+    if not ok then return self:Debug("bind popup left alone (" .. why .. ")") end
+
+    local link = GetLootSlotLink(slot)
+    local itemID = ItemIDFromLink(link)
+    if itemID and self.db.never[itemID] then
+        return self:Debug("bind popup left alone (blacklisted)")
+    end
+
+    local what = link or ("loot slot " .. tostring(slot))
+    ConfirmLootSlot(slot)
+    StaticPopup_Hide("LOOT_BIND")
+    self:Record(nil, what, "bind confirmed")
+    if not self.db.quiet then Say("|cffffd100bind confirmed|r on " .. what) end
+end
+
 --[[ config ----------------------------------------------------------------]]
 
 function A:LoadConfig()
@@ -284,12 +314,15 @@ f:RegisterEvent("PLAYER_ENTERING_WORLD")
 f:RegisterEvent("START_LOOT_ROLL")
 f:RegisterEvent("CONFIRM_LOOT_ROLL")
 f:RegisterEvent("CONFIRM_DISENCHANT_ROLL")
+f:RegisterEvent("LOOT_BIND_CONFIRM")
 
 f:SetScript("OnEvent", function(self, event, arg1, arg2)
     if event == "START_LOOT_ROLL" then
         A:Enqueue(arg1)
     elseif event == "CONFIRM_LOOT_ROLL" or event == "CONFIRM_DISENCHANT_ROLL" then
         A:Confirm(arg1, arg2, event)
+    elseif event == "LOOT_BIND_CONFIRM" then
+        A:ConfirmBind(arg1)
     elseif event == "PLAYER_ENTERING_WORLD" then
         A:Reset()
     elseif event == "ADDON_LOADED" and arg1 == ADDON then
@@ -347,7 +380,7 @@ SlashCmdList["AUTOROLLLITE"] = function(msg)
         A:PrintConfig()
         Say("|cff808080on|off, need <q>, greed <q>, delay <s>, stagger <s>, never [id],|r")
         Say("|cff808080always <id> <1|2|3>, clear, status, and toggles: |r"
-            .. "|cff808080instance raid bop de autopass quiet debug|r")
+            .. "|cff808080instance raid bop de autopass bind quiet debug|r")
 
     elseif cmd == "on" or cmd == "off" then
         db.enabled = (cmd == "on")

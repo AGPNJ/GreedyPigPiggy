@@ -31,6 +31,10 @@ end
 function GetLootRollItemLink(id) local r = rolls[id]; return r and r.link or nil end
 function RollOnLoot(id, t) table.insert(submitted, { id = id, type = t, at = clock }) end
 function ConfirmLootRoll(id, t) table.insert(confirmed, { id = id, type = t }) end
+
+local lootSlots, slotsConfirmed = {}, {}
+function GetLootSlotLink(slot) return lootSlots[slot] end
+function ConfirmLootSlot(slot) table.insert(slotsConfirmed, slot) end
 function StaticPopup_Hide(which) table.insert(popupsHidden, which) end
 
 function hooksecurefunc(name, hook)
@@ -183,6 +187,38 @@ check("no roll of our own after deferral", #submitted == before, #submitted - be
 local deferred = false
 for _, m in ipairs(chat) do if string.find(m, "deferred to another addon", 1, true) then deferred = true end end
 check("deferral logged", deferred)
+
+print("\n-- bind popup: LOOT_BIND_CONFIRM -> ConfirmLootSlot + hide LOOT_BIND")
+reset()
+slotsConfirmed, popupsHidden = {}, {}
+lootSlots[3] = "|Hitem:40395:0|h[Torch of Holy Fire]|h"
+fire("LOOT_BIND_CONFIRM", 3)
+check("bind confirmed for the right slot", slotsConfirmed[1] == 3, slotsConfirmed[1])
+check("LOOT_BIND popup hidden", popupsHidden[1] == "LOOT_BIND", popupsHidden[1])
+local namedItem = false
+for _, m in ipairs(chat) do if string.find(m, "Torch of Holy Fire", 1, true) then namedItem = true end end
+check("bind confirmation names the item", namedItem)
+
+print("\n-- bind popup respects gating and the toggle")
+reset()
+slotsConfirmed = {}
+inInstance = false
+fire("LOOT_BIND_CONFIRM", 3)
+check("bind popup left alone in the open world", #slotsConfirmed == 0, #slotsConfirmed)
+inInstance = true
+reset({ autoConfirmBind = false })
+slotsConfirmed = {}
+fire("LOOT_BIND_CONFIRM", 3)
+check("bind popup left alone when toggled off", #slotsConfirmed == 0, #slotsConfirmed)
+reset({ autoConfirmBind = true })
+slotsConfirmed = {}
+SlashCmdList["AUTOROLLLITE"]("never 40395")
+fire("LOOT_BIND_CONFIRM", 3)
+check("blacklisted item still asks", #slotsConfirmed == 0, #slotsConfirmed)
+SlashCmdList["AUTOROLLLITE"]("clear")
+slotsConfirmed = {}
+fire("LOOT_BIND_CONFIRM", 3)
+check("confirms again once un-blacklisted", slotsConfirmed[1] == 3, slotsConfirmed[1])
 
 print("\n-- FR-4: confirmations for rolls we do not own are ignored")
 reset()
