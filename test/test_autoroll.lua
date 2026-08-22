@@ -177,6 +177,24 @@ advance(2)
 check("raid allowed when enabled", only(7)[1] == 1, only(7)[1])
 raidMembers = 0
 
+-- Enabling raids must not change 5-man behaviour: the raid gate is guarded by
+-- GetNumRaidMembers() > 0, which is 0 in a party, so the flag is unreachable.
+local partyResults = {}
+for _, flag in ipairs({ false, true }) do
+    reset({ raidEnabled = flag })
+    raidMembers = 0                                  -- 5-man party
+    drop(100, 2); drop(101, 3); drop(102, 4); drop(103, 0)
+    advance(3)
+    local sig = {}
+    for _, s in ipairs(submitted) do table.insert(sig, s.id .. "=" .. s.type) end
+    table.sort(sig)
+    partyResults[tostring(flag)] = table.concat(sig, ",")
+end
+check("5-man behaviour identical with raid off and on",
+    partyResults["false"] == partyResults["true"],
+    "off=[" .. partyResults["false"] .. "] on=[" .. partyResults["true"] .. "]")
+print("      party rolls either way: " .. partyResults["true"])
+
 print("\n-- AC8: another addon rolls first -> defer, submit nothing")
 reset()
 drop(8, 4)
