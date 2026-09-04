@@ -69,6 +69,8 @@ The WoW client is on a **separate Windows machine**, not this Mac — it's alrea
 
 3.3.5 cannot answer either of these questions through a function call, so both go through a hidden scanning tooltip that the addon creates lazily (`A:Tooltip`, global `AutoRollLiteScanTip`). It is ours, never Blizzard's, so FR-8 holds.
 
+**Re-own the tooltip on every scan, in the order `ClearLines()` → `SetOwner()` → `Set*`.** An unowned tooltip accepts `SetHyperlink`/`SetLootItem` and populates nothing, so `NumLines()` is 0 and both features fail *silently* — usability returns "unknown" forever and never downgrades, and quest items stop being recognised. Owning it once at creation is not enough. The harness models the ownership requirement; reverting to the old ordering fails 7 assertions.
+
 - **FR-10 "can this character wear it?"** — `GetItemInfo` returns *localised* class/subclass strings and no numeric `itemClassID` on this client, so a hardcoded "Warlock → Cloth" table breaks on any non-enUS client. The client paints the failed requirement red in the tooltip; scan for a red line instead, since colour is locale-independent (`RED_FONT_COLOR` is `{1.0, 0.1, 0.1}`). Exclude the `ITEM_MIN_LEVEL` line — that requirement fixes itself. Verdict is tri-state and **`nil` (uncached, or an empty tooltip) must never downgrade**.
   - **Scan `TextRight` as well as `TextLeft`.** The equip location is in the left column and the armour type is in the **right** one on the same line — "Chest" left, "Leather" right — and the right-hand text is what reddens. A left-only scan catches "Classes: Warlock" but misses every armour-type mismatch, so the feature looks switched on and does nothing. This shipped once; `test_autoroll.lua` now has two regression tests that fail if the right column is dropped.
 - **FR-11 "is this a quest item?"** — `GetLootSlotInfo` on 3.3.5 returns exactly **five** values (`texture, name, quantity, quality, locked`). There is no `isQuestItem`/`questId`; those arrived in a later expansion, and writing from modern muscle memory produces code that silently returns nil. Since quest items are white, a "skip white" filter would then break quest progress. Read `ITEM_BIND_QUEST` / `ITEM_STARTS_QUEST` off `GameTooltip:SetLootItem(slot)` instead.
@@ -77,7 +79,11 @@ The test harness stubs `GetLootSlotInfo` with exactly five returns for this reas
 
 ## The loot filter needs the client's autoloot OFF
 
-`db.lootFilter` makes the addon a selective autoloot. If the client's own autoloot is enabled it has already taken everything before `LOOT_OPENED` reaches us, and the filter is a silent no-op. The addon warns once per session when it sees the autoloot flag set. Unlike rolling, the filter is **not** gated by `instanceOnly` — bags fill fastest in the open world.
+`db.lootFilter` makes the addon a selective autoloot. If the client's own autoloot is enabled it has already emptied the corpse before `LOOT_OPENED` reaches us, and the filter is a silent no-op. This is the first thing to suspect when someone reports the filter doing nothing.
+
+The addon no longer just warns: enabling the filter, or seeing `LOOT_OPENED` report autoloot ran, sets `autoLootDefault` to `0` and announces it. The filter *becomes* the player's autoloot, so that is the feature working, not a surprise side effect. If the cvar already reads off and something auto-looted anyway, it warns once and leaves it alone.
+
+`/arl status` prints the cvar state and what the last loot window did (`saw N, took N, left N`). Reach for that before theorising. Unlike rolling, the filter is **not** gated by `instanceOnly` — bags fill fastest in the open world.
 
 ## Playerbot inventories are out of reach
 

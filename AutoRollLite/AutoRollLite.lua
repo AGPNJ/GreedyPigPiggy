@@ -152,11 +152,22 @@ local function IsLevelRequirement(text)
     return string.find(text, LEVELPAT) ~= nil
 end
 
+--[[ SetOwner must be called before EVERY scan, not once at creation.
+     ClearLines() drops the tooltip's owner, and an unowned tooltip accepts
+     SetHyperlink/SetLootItem without populating anything -- NumLines() comes
+     back 0 and the scan silently reports nothing. That failure is invisible:
+     FR-10 just returns "unknown" forever and never downgrades, and FR-11 stops
+     recognising quest items. Re-owning per call is the standard idiom.     ]]
+
 function A:Tooltip()
     if not self.tip then
         self.tip = CreateFrame("GameTooltip", "AutoRollLiteScanTip", nil, "GameTooltipTemplate")
-        self.tip:SetOwner(WorldFrame, "ANCHOR_NONE")
     end
+    -- ClearLines FIRST, then SetOwner, so the owner is established after the
+    -- last thing that could drop it and immediately before the caller's Set*.
+    -- Correct under every account of when a tooltip loses its owner.
+    self.tip:ClearLines()
+    self.tip:SetOwner(WorldFrame, "ANCHOR_NONE")
     return self.tip
 end
 
@@ -174,7 +185,6 @@ local SIDES = { "TextLeft", "TextRight" }
 
 function A:RedRequirement(link)
     local tip = self:Tooltip()
-    tip:ClearLines()
     tip:SetHyperlink(link)
 
     local lines = tip:NumLines() or 0
@@ -439,7 +449,6 @@ end
 
 function A:IsQuestLoot(slot)
     local tip = self:Tooltip()
-    tip:ClearLines()
     tip:SetLootItem(slot)
     local bind, starts = ITEM_BIND_QUEST or "Quest Item",
                          ITEM_STARTS_QUEST or "This Item Begins a Quest"
@@ -469,18 +478,48 @@ function A:LootSlotWanted(slot)
     return false, "quality " .. quality
 end
 
+--[[ The client's own autoloot empties the corpse before LOOT_OPENED reaches
+     any addon, so the filter is a silent no-op while it is on -- the single
+     most likely reason for "it is still looting greys". Warning once was not
+     enough, so switch it off and say so: the filter is meaningless otherwise,
+     and the user asked for the filter. Returns true if it changed anything. ]]
+
+function A:DisableClientAutoLoot(why)
+    if not GetCVar or not SetCVar then return false end
+    if GetCVar("autoLootDefault") ~= "1" then return false end
+    SetCVar("autoLootDefault", "0")
+    Say("|cffff2020the client's own autoloot was on|r " .. why)
+    Say("|cff808080turned it off -- it empties the corpse before any addon sees it.|r")
+    Say("|cff808080the filter is your autoloot now. re-enable with /console autoLootDefault 1|r")
+    return true
+end
+
 function A:LootOpened(autoLoot)
     local db = self.db
-    if not db.enabled or not db.lootFilter then return end
+    if not db.enabled or not db.lootFilter then
+        self.lastLoot = "filter off"
+        return
+    end
 
-    if autoLoot and autoLoot ~= 0 and not self.warnedAutoLoot then
-        self.warnedAutoLoot = true
-        Say("|cffff2020loot filter cannot work while the client's own autoloot is on.|r")
-        Say("|cff808080turn it off in Interface > Controls, or /console autoLootDefault 0|r")
+    if autoLoot and autoLoot ~= 0 then
+        -- Normally the cvar is the culprit and we can just switch it off. If it
+        -- already reads off, something else auto-looted this corpse (a server
+        -- forcing it, or another addon) -- we cannot fix that, so say so once.
+        if not self:DisableClientAutoLoot("and took this corpse before the filter could run.")
+           and not self.warnedAutoLoot then
+            self.warnedAutoLoot = true
+            Say("|cffff2020something auto-looted this corpse before the filter ran.|r")
+            Say("|cff808080the client autoloot setting already reads off, so check|r")
+            Say("|cff808080your other addons or the server's own autoloot.|r")
+        end
     end
 
     local n = GetNumLootItems()
-    if not n or n == 0 then return end
+    if not n or n == 0 then
+        -- nothing left to decide: either an empty corpse, or autoloot beat us
+        self.lastLoot = (autoLoot and autoLoot ~= 0) and "autoloot emptied it" or "no items"
+        return
+    end
 
     local took, left = 0, 0
     -- backwards: looting a slot can renumber the ones after it
@@ -499,8 +538,9 @@ function A:LootOpened(autoLoot)
     -- Deliberately not a chat line: on a grind this fires once per corpse.
     -- The running total is available from /arl status instead.
     self.lootSkipped = (self.lootSkipped or 0) + left
+    self.lastLoot = string.format("saw %d, took %d, left %d", n, took, left)
     if db.lootClose then CloseLoot() end
-    self:Debug("loot filter took " .. took .. ", left " .. left)
+    self:Debug("loot filter " .. self.lastLoot)
 end
 
 --[[ config ----------------------------------------------------------------]]
@@ -597,6 +637,9 @@ SlashCmdList["AUTOROLLLITE"] = function(msg)
     if toggle then
         db[toggle[1]] = ParseBool(a1, db[toggle[1]])
         Say(toggle[2] .. " " .. OnOff(db[toggle[1]]))
+        if toggle[1] == "lootFilter" and db.lootFilter then
+            A:DisableClientAutoLoot("and would have made the filter do nothing.")
+        end
 
     elseif cmd == "" or cmd == "help" then
         A:PrintConfig()
@@ -671,9 +714,12 @@ SlashCmdList["AUTOROLLLITE"] = function(msg)
             Say(string.format("pending %d: %s in %.2fs", rollID, ROLLNAME[e.action] or "?", e.fireAt - now))
         end
         if n == 0 then Say("pending queue empty") end
-        if db.lootFilter then
-            Say("loot filter has left |cffffffff" .. (A.lootSkipped or 0) .. "|r items on corpses this session")
-        end
+        Say("loot filter " .. OnOff(db.lootFilter) .. "  pick up quality >=|cffffffff"
+            .. db.lootQuality .. "|r  client autoloot "
+            .. ((GetCVar and GetCVar("autoLootDefault") == "1")
+                and "|cffff2020ON -- filter cannot work|r" or "|cff1eff00off|r"))
+        Say("last loot window: |cffffffff" .. tostring(A.lastLoot or "none yet")
+            .. "|r  left |cffffffff" .. (A.lootSkipped or 0) .. "|r items this session")
         Say("last " .. #A.log .. " decisions:")
         for i = 1, #A.log do DEFAULT_CHAT_FRAME:AddMessage("  " .. A.log[i]) end
 

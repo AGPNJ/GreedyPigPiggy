@@ -41,6 +41,9 @@ function StaticPopup_Hide(which) table.insert(popupsHidden, which) end
 -- red is the text of a red tooltip line, i.e. a requirement this character
 -- fails. absent itemID = not in the local cache yet.
 WorldFrame = {}
+local cvars = { autoLootDefault = "0" }
+function GetCVar(k) return cvars[k] end
+function SetCVar(k, v) cvars[k] = tostring(v) end
 -- forward declaration: the tooltip stub below reads it, reset() rewrites it
 local lootItems, looted, lootClosed = {}, {}, 0
 ITEM_MIN_LEVEL = "Requires Level %d"
@@ -72,9 +75,13 @@ local function TipLine(side, i)
     return col[i]
 end
 
-local tooltip = { n = 0 }
-function tooltip:SetOwner() end
+-- A tooltip with no owner accepts Set* calls and populates nothing. Modelled
+-- here so a scan that forgets to (re-)own the tooltip fails loudly instead of
+-- silently reporting zero lines forever.
+local tooltip = { n = 0, owned = false }
+function tooltip:SetOwner() self.owned = true end
 function tooltip:ClearLines()
+    self.owned = false
     for _, side in ipairs({ "TextLeft", "TextRight" }) do
         for i = 1, self.n do
             local l = TipLine(side, i)
@@ -84,6 +91,7 @@ function tooltip:ClearLines()
     self.n = 0
 end
 function tooltip:SetHyperlink(link)
+    if not self.owned then self.n = 0; return end
     local info = itemInfo[LinkID(link)]
     if not info then self.n = 0; return end       -- uncached: tooltip stays empty
     TipLine("TextLeft", 1).text = "Item"
@@ -100,6 +108,7 @@ function tooltip:SetHyperlink(link)
     self.n = 3
 end
 function tooltip:SetLootItem(slot)
+    if not self.owned then self.n = 0; return end
     local e = lootItems[slot] or {}
     TipLine("TextLeft", 1).text = "Slot" .. slot
     TipLine("TextLeft", 2).text = e.quest
@@ -154,6 +163,7 @@ end
 local function reset(cfg)
     chat, popupsHidden, confirmed, submitted, rolls = {}, {}, {}, {}, {}
     lootItems, looted, lootClosed = {}, {}, 0
+    cvars.autoLootDefault = "0"
     inInstance, raidMembers = true, 0
     clock = clock + 300               -- push past any TTL from the last test
     fire("PLAYER_ENTERING_WORLD")
@@ -547,11 +557,28 @@ fire("LOOT_OPENED", 0)
 check("window left open when lootshut is off", lootClosed == 0, lootClosed)
 
 reset({ lootFilter = true, lootQuality = 2 })
+cvars.autoLootDefault = "1"
 lootItems = { { quality = 4, itemID = 7004 } }
 fire("LOOT_OPENED", 1)
+check("client autoloot is switched off when it beats the filter",
+    cvars.autoLootDefault == "0", cvars.autoLootDefault)
+local told = false
+for _, m in ipairs(chat) do if string.find(m, "turned it off", 1, true) then told = true end end
+check("and the user is told it happened", told)
+
+reset({ lootFilter = true, lootQuality = 2 })
+lootItems = { { quality = 4, itemID = 7004 } }
+fire("LOOT_OPENED", 1)                        -- autolooted, but the cvar reads off
 local warned = false
-for _, m in ipairs(chat) do if string.find(m, "autoloot is on", 1, true) then warned = true end end
-check("warns when the client's own autoloot is enabled", warned)
+for _, m in ipairs(chat) do if string.find(m, "something auto-looted", 1, true) then warned = true end end
+check("warns when something else auto-loots and the cvar is already off", warned)
+
+reset({ lootFilter = false })
+cvars.autoLootDefault = "1"
+SlashCmdList["AUTOROLLLITE"]("loot on")
+check("/arl loot on switches client autoloot off immediately",
+    cvars.autoLootDefault == "0", cvars.autoLootDefault)
+AutoRollLiteDB.lootFilter = false
 
 reset({ lootFilter = true })
 SlashCmdList["AUTOROLLLITE"]("off")

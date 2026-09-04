@@ -159,6 +159,7 @@ An unusable blue is still worth gold or a shard, so it keeps a Greed. An off-cla
 Determining usability:
 
 - 3.3.5 has **no API that answers this**. `GetItemInfo`'s class and subclass fields are localised display strings, and numeric `itemClassID` does not exist on this client, so any hardcoded class-to-armour table would break on a non-enUS client.
+- The scanning tooltip must be **re-owned before every scan**, ordered `ClearLines()` then `SetOwner()` then `Set*`. An unowned tooltip accepts `SetHyperlink`/`SetLootItem` and populates nothing: `NumLines()` returns 0, so FR-10 reports "unknown" forever and never downgrades, and FR-11 stops recognising quest items. Both failures are completely silent. Establishing the owner after the last thing that could drop it and immediately before the `Set*` call is correct under every account of when a tooltip loses its owner.
 - The client already knows the answer and paints the failed requirement **red** in the tooltip. Read that: own hidden tooltip (never Blizzard's — FR-8), `SetHyperlink(link)`, scan for a line coloured red (`RED_FONT_COLOR` is `{1.0, 0.1, 0.1}` on this client, so `r > 0.9, g < 0.2, b < 0.2`). Colour is locale-independent.
 - **Both tooltip columns must be scanned.** An item tooltip puts the equip location in the left column and the armour type or weapon subclass in the **right** one on the same line — "Chest" left, "Leather" right — and it is the right-hand text that reddens for a character who cannot wear it. `GameTooltipTemplate` defines `$parentTextRight<n>` alongside `$parentTextLeft<n>` for exactly this. Scanning only `TextLeft` finds class restrictions ("Classes: Warlock") but **silently misses every armour-type mismatch**, which is the common case and produces a check that appears to do nothing.
 - An empty tooltip (zero lines) is `nil`, not `true`. Returning "usable" for a tooltip that never populated would downgrade nothing while looking like it worked.
@@ -173,7 +174,8 @@ Usability is computed impurely at enqueue time and passed into `A:Decide` as a p
 
 The client's own autoloot is all-or-nothing, so grinding fills the bags with vendor trash. When enabled, on `LOOT_OPENED` walk the slots and take only what clears `db.lootQuality` (default 2 — skips grey and white), leaving the rest on the corpse.
 
-- **Requires the client's own autoloot to be OFF.** If it is on, the client has already taken everything before the event reaches us. Warn once in chat when `LOOT_OPENED` reports autoloot is enabled.
+- **The client's own autoloot must be OFF**, and the addon enforces this rather than asking. If autoloot is on, the client empties the corpse before `LOOT_OPENED` reaches any addon and the filter is a silent no-op — the single most likely cause of "it is still looting greys". Enabling the filter, or seeing `LOOT_OPENED` report `autoLoot ~= 0`, sets `autoLootDefault` to `0` and says so in chat. The filter *becomes* the player's autoloot, so this is the feature working as asked, not a surprise. If the cvar already reads off and something auto-looted anyway (a server forcing it, another addon), warn once and stop — that is not ours to fix.
+- `/arl status` reports the autoloot cvar, the filter settings, and what the last loot window actually did (`saw N, took N, left N`), so a no-op is diagnosable in one command instead of by guesswork.
 - Iterate **backwards** from `GetNumLootItems()`; looting a slot can renumber the ones after it.
 - Always taken: coins (`LootSlotIsCoin`), quest items, whitelisted items.
 - Never taken: blacklisted items, locked slots.
