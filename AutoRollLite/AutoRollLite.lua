@@ -646,13 +646,30 @@ local function CursorItemID()
     return tonumber(id) or ItemIDFromLink(link)
 end
 
+--[[ Two independent quality thresholds govern two unrelated things, and
+     conflating them is the easiest mistake to make with this addon: setting
+     'lootq 3' does nothing whatever to rolling, so greens keep being Greeded
+     and it reads as a bug. Always print them as two labelled groups, and never
+     print one without the other.                                            ]]
+
+function A:PrintScopes()
+    local db = self.db
+    Say("|cffffd100ROLLING|r on group loot: Need |cffffffff>=" .. db.needQuality
+        .. "|r  Greed |cffffffff>=" .. db.greedQuality .. "|r  Pass below"
+        .. (db.usableOnly and "  |cff808080+ off-class gear drops one step|r" or ""))
+    Say("|cffffd100LOOTING|r from corpses: filter " .. OnOff(db.lootFilter)
+        .. "  pick up |cffffffff>=" .. db.lootQuality .. "|r")
+    if db.greedQuality < db.lootQuality then
+        Say("|cff808080note: you Greed down to " .. db.greedQuality .. " but only pick up "
+            .. db.lootQuality .. "+. '/arl greed " .. db.lootQuality .. "' to match them.|r")
+    end
+end
+
 function A:PrintConfig()
     local db = self.db
-    Say("master " .. OnOff(db.enabled) .. "  need>=|cffffffff" .. db.needQuality
-        .. "|r  greed>=|cffffffff" .. db.greedQuality .. "|r  delay |cffffffff"
+    Say("master " .. OnOff(db.enabled) .. "  delay |cffffffff"
         .. db.delay .. "s|r  stagger |cffffffff" .. db.stagger .. "s|r")
-    Say("loot filter " .. OnOff(db.lootFilter) .. "  pick up quality >=|cffffffff"
-        .. db.lootQuality .. "|r  usable-only " .. OnOff(db.usableOnly))
+    self:PrintScopes()
     local parts = {}
     for cmd, t in pairs(TOGGLES) do table.insert(parts, cmd .. " " .. OnOff(db[t[1]])) end
     table.sort(parts)
@@ -694,7 +711,21 @@ SlashCmdList["AUTOROLLLITE"] = function(msg)
         local key = (cmd == "lootq") and "lootQuality" or (cmd .. "Quality")
         if q and q >= 0 and q <= 7 then
             db[key] = q
-            Say(cmd .. " minimum quality set to |cffffffff" .. q .. "|r")
+            -- say which of the two things this changed, in words: "lootq" not
+            -- affecting rolling is the single most confusing thing here.
+            if cmd == "lootq" then
+                Say("picking up from corpses: quality |cffffffff>=" .. q .. "|r")
+                if db.greedQuality < q then
+                    Say("|cff808080rolling is unchanged -- you still Greed down to quality "
+                        .. db.greedQuality .. ". '/arl greed " .. q .. "' to match.|r")
+                end
+            else
+                Say("rolling: " .. cmd .. " on quality |cffffffff>=" .. q .. "|r")
+                if cmd == "greed" and db.lootFilter and db.lootQuality < q then
+                    Say("|cff808080picking up is unchanged -- the filter still takes quality "
+                        .. db.lootQuality .. "+. '/arl lootq " .. q .. "' to match.|r")
+                end
+            end
         else Say("usage: /arl " .. cmd .. " <0-7>") end
 
     elseif cmd == "delay" or cmd == "stagger" then
@@ -752,10 +783,10 @@ SlashCmdList["AUTOROLLLITE"] = function(msg)
             Say(string.format("pending %d: %s in %.2fs", rollID, ROLLNAME[e.action] or "?", e.fireAt - now))
         end
         if n == 0 then Say("pending queue empty") end
-        Say("loot filter " .. OnOff(db.lootFilter) .. "  pick up quality >=|cffffffff"
-            .. db.lootQuality .. "|r  client autoloot "
+        A:PrintScopes()
+        Say("client autoloot "
             .. ((GetCVar and GetCVar("autoLootDefault") == "1")
-                and "|cffff2020ON -- filter cannot work|r" or "|cff1eff00off|r"))
+                and "|cffff2020ON -- the loot filter cannot work|r" or "|cff1eff00off|r"))
         if A.tipError then
             Say("|cffff2020tooltip scan disabled this session:|r |cff808080" .. A.tipError .. "|r")
         end

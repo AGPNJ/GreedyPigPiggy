@@ -170,6 +170,8 @@ Determining usability:
 
 Usability is computed impurely at enqueue time and passed into `A:Decide` as a primitive, preserving the purity invariant. It is recomputed if a late link resolves (FR-5).
 
+**`db.lootQuality` is not `db.greedQuality`.** This one governs picking up from corpses; the FR-1 thresholds govern rolling. They are independent and are routinely conflated, so every surface that prints one prints both, labelled `ROLLING` and `LOOTING`, and a mismatch names the command that reconciles them.
+
 ### FR-11: Corpse loot filter (`db.lootFilter`, default off)
 
 The client's own autoloot is all-or-nothing, so grinding fills the bags with vendor trash. When enabled, on `LOOT_OPENED` walk the slots and take only what clears `db.lootQuality` (default 2 — skips grey and white), leaving the rest on the corpse.

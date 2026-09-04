@@ -641,6 +641,52 @@ check("bind popup cleared for a filter-initiated pickup", slotsConfirmed[1] == 1
 inInstance = true
 AutoRollLiteDB.lootFilter = false
 
+print("\n-- lootq and greed are independent, and say so")
+-- Setting lootq 3 does nothing to rolling. Greens keep getting Greed because
+-- greedQuality is still 2, which reads as a bug unless the output says
+-- plainly which of the two things each command changed.
+reset({ lootQuality = 2, greedQuality = 2 })
+SlashCmdList["AUTOROLLLITE"]("lootq 3")
+check("lootq does not touch the roll threshold", AutoRollLiteDB.greedQuality == 2,
+    AutoRollLiteDB.greedQuality)
+local nudged = false
+for _, m in ipairs(chat) do
+    if string.find(m, "rolling is unchanged", 1, true) then nudged = true end
+end
+check("lootq warns that rolling is unchanged", nudged)
+
+reset({ lootQuality = 3, greedQuality = 2 })
+drop(300, 2)
+advance(2)
+check("greens still Greeded while greedQuality is 2", only(300)[1] == 2, only(300)[1])
+
+reset({ lootQuality = 3, greedQuality = 2 })
+SlashCmdList["AUTOROLLLITE"]("greed 3")
+drop(301, 2)
+advance(2)
+check("greens no longer rolled once greed is 3", #submitted == 0, #submitted)
+
+reset({ lootQuality = 3, greedQuality = 2, lootFilter = true })
+chat = {}
+SlashCmdList["AUTOROLLLITE"]("")
+local sawRoll, sawLoot, sawMismatch = false, false, false
+for _, m in ipairs(chat) do
+    if string.find(m, "ROLLING", 1, true) then sawRoll = true end
+    if string.find(m, "LOOTING", 1, true) then sawLoot = true end
+    if string.find(m, "to match them", 1, true) then sawMismatch = true end
+end
+check("config summary labels rolling and looting separately", sawRoll and sawLoot)
+check("and flags a mismatch between the two thresholds", sawMismatch)
+
+reset({ lootQuality = 3, greedQuality = 2, lootFilter = true })
+chat = {}
+SlashCmdList["AUTOROLLLITE"]("status")
+local statusRoll = false
+for _, m in ipairs(chat) do if string.find(m, "ROLLING", 1, true) then statusRoll = true end end
+check("status shows the roll thresholds too", statusRoll)
+AutoRollLiteDB.greedQuality = 2
+AutoRollLiteDB.lootFilter = false
+
 print("\n-- slash surface does not error")
 reset()
 local cmds = { "", "help", "status", "need 4", "greed 3", "delay 2", "stagger 0.5",

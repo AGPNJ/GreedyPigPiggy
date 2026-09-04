@@ -77,6 +77,12 @@ The WoW client is on a **separate Windows machine**, not this Mac — it's alrea
 
 The test harness stubs `GetLootSlotInfo` with exactly five returns for this reason. Do not widen it.
 
+## Two quality thresholds, two unrelated jobs
+
+`greedQuality` / `needQuality` govern **rolling** on group loot. `lootQuality` governs **picking up** from corpses. They are independent, and conflating them is the easiest mistake to make with this addon: `/arl lootq 3` does nothing whatever to rolling, so greens keep being Greeded and it reads as a bug.
+
+Never print one without the other. `/arl` and `/arl status` both print a labelled `ROLLING` / `LOOTING` pair via `A:PrintScopes`, setting either threshold says in words which of the two it changed, and a mismatch between them is flagged with the command that would fix it.
+
 ## An error in an event handler is silent, and looks like a missing feature
 
 3.3.5 swallows Lua errors unless `/console scriptErrors 1` is set, and an error thrown inside `OnEvent` kills the **rest of that handler**. When the tooltip scan threw inside the loot filter's per-slot loop, the filter took nothing, never closed the window, and never recorded a run — so `/arl status` said "none yet" while the player picked the greys up by hand. That presents exactly like the feature being off.
