@@ -159,7 +159,9 @@ An unusable blue is still worth gold or a shard, so it keeps a Greed. An off-cla
 Determining usability:
 
 - 3.3.5 has **no API that answers this**. `GetItemInfo`'s class and subclass fields are localised display strings, and numeric `itemClassID` does not exist on this client, so any hardcoded class-to-armour table would break on a non-enUS client.
-- The client already knows the answer and paints the failed requirement **red** in the tooltip. Read that: own hidden tooltip (never Blizzard's — FR-8), `SetHyperlink(link)`, scan for a line coloured red (`r > 0.9, g < 0.2, b < 0.2`). Colour is locale-independent.
+- The client already knows the answer and paints the failed requirement **red** in the tooltip. Read that: own hidden tooltip (never Blizzard's — FR-8), `SetHyperlink(link)`, scan for a line coloured red (`RED_FONT_COLOR` is `{1.0, 0.1, 0.1}` on this client, so `r > 0.9, g < 0.2, b < 0.2`). Colour is locale-independent.
+- **Both tooltip columns must be scanned.** An item tooltip puts the equip location in the left column and the armour type or weapon subclass in the **right** one on the same line — "Chest" left, "Leather" right — and it is the right-hand text that reddens for a character who cannot wear it. `GameTooltipTemplate` defines `$parentTextRight<n>` alongside `$parentTextLeft<n>` for exactly this. Scanning only `TextLeft` finds class restrictions ("Classes: Warlock") but **silently misses every armour-type mismatch**, which is the common case and produces a check that appears to do nothing.
+- An empty tooltip (zero lines) is `nil`, not `true`. Returning "usable" for a tooltip that never populated would downgrade nothing while looking like it worked.
 - Exclude the `ITEM_MIN_LEVEL` ("Requires Level %d") line. That requirement fixes itself, and a levelling character should still roll on gear it will wear shortly.
 - Tri-state result: `true` / `false` / `nil`. `nil` means *cannot tell* — the item is not in the local cache yet, or the check is off. **`nil` never downgrades.**
 - Items with no equip slot (mats, consumables, recipes) are usable by definition and skip the scan.
@@ -203,6 +205,7 @@ Slash commands under `/arl` (and alias `/autoroll`):
 /arl loot on|off           -- FR-11: corpse loot filter
 /arl lootq <quality>       -- FR-11: minimum quality to pick up (default 2)
 /arl lootshut on|off       -- FR-11: close the loot window after filtering
+/arl check <itemID>        -- FR-10: dump the usability verdict for one item
 /arl never <itemID>        -- blacklist
 /arl always <itemID> <1|2> -- force need(1)/greed(2)
 /arl clear                 -- clear both lists

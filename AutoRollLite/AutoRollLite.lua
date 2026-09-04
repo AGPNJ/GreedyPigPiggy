@@ -160,30 +160,65 @@ function A:Tooltip()
     return self.tip
 end
 
-function A:Usable(link)
-    if not self.db.usableOnly or not link then return nil end
+local SIDES = { "TextLeft", "TextRight" }
 
-    local name, _, _, _, _, _, _, _, equipSlot = GetItemInfo(link)
-    if not name then return nil end                      -- not cached yet
-    if not equipSlot or equipSlot == "" then return true end   -- not gear at all
+--[[ Returns true if the tooltip carries a requirement this character fails,
+     false if it carries none, nil if we cannot tell.
 
+     BOTH columns must be read. An item tooltip puts the equip location in the
+     left column and the armour type or weapon subclass in the RIGHT one on the
+     same line -- "Chest" left, "Leather" right -- and it is the right-hand text
+     that turns red for a character that cannot wear it. Scanning only
+     TextLeft finds class restrictions but silently misses every armour-type
+     mismatch, which is the common case.                                     ]]
+
+function A:RedRequirement(link)
     local tip = self:Tooltip()
     tip:ClearLines()
     tip:SetHyperlink(link)
 
-    for i = 2, (tip:NumLines() or 0) do
-        local fs = _G["AutoRollLiteScanTipTextLeft" .. i]
-        local text = fs and fs:GetText()
-        if text and text ~= "" then
-            local r, g, b = fs:GetTextColor()
-            -- red line == a requirement this character fails. "Requires Level"
-            -- is excluded: that one fixes itself, and a levelling character
-            -- should still roll on gear it will wear in two bars' time.
-            if r and r > 0.9 and g and g < 0.2 and b and b < 0.2 and not IsLevelRequirement(text) then
-                self:Debug("unusable (" .. text .. "): " .. link)
-                return false
+    local lines = tip:NumLines() or 0
+    if lines == 0 then return nil end            -- tooltip never populated
+
+    for i = 2, lines do
+        for s = 1, 2 do
+            local fs = _G["AutoRollLiteScanTip" .. SIDES[s] .. i]
+            local text = fs and fs:GetText()
+            if text and text ~= "" then
+                local r, g, b = fs:GetTextColor()
+                -- RED_FONT_COLOR on this client is {1.0, 0.1, 0.1}. Colour is
+                -- locale-independent, which is the whole point of reading it.
+                -- "Requires Level" is excluded: that one fixes itself, and a
+                -- levelling character should still roll on gear it will wear
+                -- in two bars' time.
+                if r and r > 0.9 and g and g < 0.2 and b and b < 0.2
+                   and not IsLevelRequirement(text) then
+                    return true, text
+                end
             end
         end
+    end
+    return false
+end
+
+function A:Usable(link)
+    if not self.db.usableOnly or not link then return nil end
+
+    local name, _, _, _, _, _, _, _, equipSlot = GetItemInfo(link)
+    if not name then
+        self:Debug("usable? " .. link .. " -> unknown (not in the item cache)")
+        return nil
+    end
+    if not equipSlot or equipSlot == "" then return true end
+
+    local red, text = self:RedRequirement(link)
+    if red == nil then
+        self:Debug("usable? " .. link .. " -> unknown (tooltip empty)")
+        return nil
+    end
+    if red then
+        self:Debug("usable? " .. link .. " -> NO (" .. text .. ")")
+        return false
     end
     return true
 end
@@ -566,7 +601,7 @@ SlashCmdList["AUTOROLLLITE"] = function(msg)
     elseif cmd == "" or cmd == "help" then
         A:PrintConfig()
         Say("|cff808080on|off, need <q>, greed <q>, lootq <q>, delay <s>, stagger <s>,|r")
-        Say("|cff808080never [id], always <id> <1|2|3>, clear, status, and toggles:|r")
+        Say("|cff808080never [id], always <id> <1|2|3>, clear, check <id>, status, toggles:|r")
         Say("|cff808080instance raid bop de autopass bind loot lootshut usable quiet debug|r")
 
     elseif cmd == "on" or cmd == "off" then
@@ -601,6 +636,29 @@ SlashCmdList["AUTOROLLLITE"] = function(msg)
             db.always[id], db.never[id] = rt, nil
             Say("item |cffffffff" .. id .. "|r forced to " .. ROLLNAME[rt])
         else Say("usage: /arl always <itemID> <1=Need 2=Greed 3=DE>") end
+
+    elseif cmd == "check" then
+        -- FR-10 diagnostic: ask the tooltip about one item, right now, without
+        -- waiting for the item to drop in a dungeon.
+        local id = tonumber(a1) or CursorItemID()
+        if id then
+            local link = "item:" .. id
+            local name, _, _, _, _, _, _, _, equipSlot = GetItemInfo(link)
+            if not name then
+                Say("item |cffffffff" .. id .. "|r is not in the local cache yet -- rolls on it will not be downgraded")
+            elseif not equipSlot or equipSlot == "" then
+                Say(name .. " is not equippable gear -- always counts as usable")
+            else
+                local red, text = A:RedRequirement(link)
+                if red == nil then
+                    Say(name .. ": |cff808080tooltip did not populate|r")
+                elseif red then
+                    Say(name .. " (" .. equipSlot .. "): |cffff2020NOT usable|r |cff808080-- " .. text .. "|r")
+                else
+                    Say(name .. " (" .. equipSlot .. "): |cff1eff00usable|r")
+                end
+            end
+        else Say("usage: /arl check <itemID>  (or pick the item up first)") end
 
     elseif cmd == "clear" then
         wipe(db.never); wipe(db.always)

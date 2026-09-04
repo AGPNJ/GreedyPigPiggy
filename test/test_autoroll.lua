@@ -56,36 +56,53 @@ function GetItemInfo(link)
     return "Item", link, 2, 80, 70, "Armor", "Cloth", 1, info.equipSlot or "", "tex"
 end
 
-local tipLines = {}
-local function TipLine(i)
-    if not tipLines[i] then
+-- The real client puts the equip location in the LEFT column and the armour
+-- type in the RIGHT one on the same line, and reddens the right-hand text for
+-- gear the character cannot wear. The stub models both columns for that reason.
+local tipLines = { TextLeft = {}, TextRight = {} }
+local function TipLine(side, i)
+    local col = tipLines[side]
+    if not col[i] then
         local fs = {}
         function fs:GetText() return self.text end
         function fs:GetTextColor() return self.r or 1, self.g or 1, self.b or 1 end
-        tipLines[i] = fs
-        _G["AutoRollLiteScanTipTextLeft" .. i] = fs
+        col[i] = fs
+        _G["AutoRollLiteScanTip" .. side .. i] = fs
     end
-    return tipLines[i]
+    return col[i]
 end
 
 local tooltip = { n = 0 }
 function tooltip:SetOwner() end
 function tooltip:ClearLines()
-    for i = 1, self.n do local l = TipLine(i); l.text, l.r, l.g, l.b = nil, 1, 1, 1 end
+    for _, side in ipairs({ "TextLeft", "TextRight" }) do
+        for i = 1, self.n do
+            local l = TipLine(side, i)
+            l.text, l.r, l.g, l.b = nil, 1, 1, 1
+        end
+    end
     self.n = 0
 end
 function tooltip:SetHyperlink(link)
-    local info = itemInfo[LinkID(link)] or {}
-    TipLine(1).text = "Item"
-    local l2 = TipLine(2)
-    l2.text = info.red or "Binds when equipped"
-    if info.red then l2.r, l2.g, l2.b = 1.0, 0.1, 0.1 else l2.r, l2.g, l2.b = 1, 1, 1 end
-    self.n = 2
+    local info = itemInfo[LinkID(link)]
+    if not info then self.n = 0; return end       -- uncached: tooltip stays empty
+    TipLine("TextLeft", 1).text = "Item"
+    TipLine("TextLeft", 2).text = "Binds when equipped"
+    TipLine("TextLeft", 3).text = info.equipSlot ~= "" and "Chest" or nil
+    if info.red then
+        local l = TipLine("TextLeft", 3)
+        l.text, l.r, l.g, l.b = info.red, 1.0, 0.1, 0.1
+    end
+    if info.redRight then
+        local l = TipLine("TextRight", 3)
+        l.text, l.r, l.g, l.b = info.redRight, 1.0, 0.1, 0.1
+    end
+    self.n = 3
 end
 function tooltip:SetLootItem(slot)
     local e = lootItems[slot] or {}
-    TipLine(1).text = "Slot" .. slot
-    TipLine(2).text = e.quest
+    TipLine("TextLeft", 1).text = "Slot" .. slot
+    TipLine("TextLeft", 2).text = e.quest
     self.n = e.quest and 2 or 1
 end
 function tooltip:NumLines() return self.n end
@@ -421,6 +438,8 @@ reset({ usableOnly = false })
 itemInfo[6001] = { equipSlot = "INVTYPE_CHEST", red = "Plate" }
 itemInfo[6002] = { equipSlot = "INVTYPE_CHEST" }
 itemInfo[6003] = { equipSlot = "INVTYPE_CHEST", red = "Requires Level 80" }
+-- the common real-world case: armour type sits in the tooltip's RIGHT column
+itemInfo[6005] = { equipSlot = "INVTYPE_CHEST", redRight = "Leather" }
 drop(200, 2, { itemID = 6001 })
 advance(2)
 check("off-class green still Greeded with the check off", only(200)[1] == 2, only(200)[1])
@@ -458,7 +477,17 @@ check("whitelist outranks the usability check", only(206)[1] == 1, only(206)[1])
 SlashCmdList["AUTOROLLLITE"]("clear")
 
 reset({ usableOnly = true })
-itemInfo[6004] = { red = "Plate" }       -- red line but no equip slot: not gear
+drop(208, 2, { itemID = 6005 })
+advance(2)
+check("off-class armour type in the RIGHT column is caught", #submitted == 0, #submitted)
+
+reset({ usableOnly = true })
+drop(209, 3, { itemID = 6005 })
+advance(2)
+check("right-column blue downgraded Need -> Greed", only(209)[1] == 2, only(209)[1])
+
+reset({ usableOnly = true })
+itemInfo[6004] = { equipSlot = "", red = "Plate" }   -- red line but no equip slot
 drop(207, 2, { itemID = 6004 })
 advance(2)
 check("non-equippable item skips the tooltip scan", only(207)[1] == 2, only(207)[1])
@@ -548,7 +577,7 @@ local cmds = { "", "help", "status", "need 4", "greed 3", "delay 2", "stagger 0.
     "instance off", "instance on", "raid on", "raid off", "bop on", "bop off",
     "de on", "de off", "autopass on", "autopass off", "quiet on", "quiet off",
     "loot on", "loot off", "lootshut on", "lootshut off", "usable on", "usable off",
-    "lootq 3", "lootq 2", "lootq 99",
+    "lootq 3", "lootq 2", "lootq 99", "check", "check 6005", "check 6099",
     "debug on", "debug off", "never", "always 5", "need 99", "delay 99", "bogus" }
 local allOk = true
 for _, c in ipairs(cmds) do
