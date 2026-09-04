@@ -159,6 +159,25 @@ end
      FR-10 just returns "unknown" forever and never downgrades, and FR-11 stops
      recognising quest items. Re-owning per call is the standard idiom.     ]]
 
+--[[ 3.3.5 swallows Lua errors unless scriptErrors is on, so an error thrown
+     inside an event handler kills the rest of that handler *silently*. The
+     loot filter's quality rules are the actual feature and must never be
+     taken down by the optional tooltip scan sitting next to them, so every
+     tooltip call goes through here. First failure is reported once, in chat,
+     and disables the scan for the session rather than erroring per corpse. ]]
+
+function A:Protected(what, fn, ...)
+    if self.tipBroken then return nil end
+    local ok, a, b = pcall(fn, ...)
+    if ok then return a, b end
+    self.tipBroken = true
+    self.tipError = what .. ": " .. tostring(a)
+    Say("|cffff2020tooltip scan failed -- " .. self.tipError .. "|r")
+    Say("|cff808080quest-item detection and /arl usable are off for this session.|r")
+    Say("|cff808080the loot quality filter is unaffected and still running.|r")
+    return nil
+end
+
 function A:Tooltip()
     if not self.tip then
         self.tip = CreateFrame("GameTooltip", "AutoRollLiteScanTip", nil, "GameTooltipTemplate")
@@ -184,6 +203,7 @@ local SIDES = { "TextLeft", "TextRight" }
      mismatch, which is the common case.                                     ]]
 
 function A:RedRequirement(link)
+    return self:Protected("SetHyperlink", function()
     local tip = self:Tooltip()
     tip:SetHyperlink(link)
 
@@ -209,6 +229,7 @@ function A:RedRequirement(link)
         end
     end
     return false
+    end)
 end
 
 function A:Usable(link)
@@ -448,16 +469,18 @@ end
      client, so scan for the two marker lines on our own hidden tooltip.     ]]
 
 function A:IsQuestLoot(slot)
-    local tip = self:Tooltip()
-    tip:SetLootItem(slot)
-    local bind, starts = ITEM_BIND_QUEST or "Quest Item",
-                         ITEM_STARTS_QUEST or "This Item Begins a Quest"
-    for i = 1, (tip:NumLines() or 0) do
-        local fs = _G["AutoRollLiteScanTipTextLeft" .. i]
-        local text = fs and fs:GetText()
-        if text == bind or text == starts then return true end
-    end
-    return false
+    return self:Protected("SetLootItem", function()
+        local tip = self:Tooltip()
+        tip:SetLootItem(slot)
+        local bind, starts = ITEM_BIND_QUEST or "Quest Item",
+                             ITEM_STARTS_QUEST or "This Item Begins a Quest"
+        for i = 1, (tip:NumLines() or 0) do
+            local fs = _G["AutoRollLiteScanTipTextLeft" .. i]
+            local text = fs and fs:GetText()
+            if text == bind or text == starts then return true end
+        end
+        return false
+    end) and true or false
 end
 
 function A:LootSlotWanted(slot)
@@ -467,7 +490,6 @@ function A:LootSlotWanted(slot)
 
     local _, _, _, quality, locked = GetLootSlotInfo(slot)
     if locked then return false, "locked" end
-    if self:IsQuestLoot(slot) then return true, "quest item" end
 
     local itemID = ItemIDFromLink(GetLootSlotLink(slot))
     if itemID and db.never[itemID]  then return false, "blacklisted" end
@@ -475,6 +497,11 @@ function A:LootSlotWanted(slot)
 
     if quality == nil then return true, "unknown quality" end
     if quality >= db.lootQuality then return true, "quality " .. quality end
+
+    -- Only now consult the tooltip. An item at or above the threshold is taken
+    -- either way, so the scan can only change the answer for the ones we are
+    -- about to leave behind. Keeps the fragile path off the common case.
+    if self:IsQuestLoot(slot) then return true, "quest item" end
     return false, "quality " .. quality
 end
 
@@ -521,10 +548,19 @@ function A:LootOpened(autoLoot)
         return
     end
 
+    -- Recorded before the loop, so /arl status still shows the handler ran
+    -- even if something below throws.
+    self.lastLoot = "saw " .. n .. ", still deciding"
+
     local took, left = 0, 0
     -- backwards: looting a slot can renumber the ones after it
     for slot = n, 1, -1 do
-        local want, why = self:LootSlotWanted(slot)
+        local ok, want, why = pcall(self.LootSlotWanted, self, slot)
+        if not ok then
+            self.lastLoot = "error on slot " .. slot .. ": " .. tostring(want)
+            Say("|cffff2020loot filter error:|r |cff808080" .. tostring(want) .. "|r")
+            want, why = false, "error"
+        end
         if want then
             self.lastFilterLoot = GetTime()
             LootSlot(slot)
@@ -561,6 +597,8 @@ function A:Reset()
     wipe(self.pending); wipe(self.ours); wipe(self.external)
     self.inFlight, self.lastFire, self.tick = false, 0, 0
     self.lastFilterLoot = 0
+    -- a reload should retry the tooltip rather than stay disabled forever
+    self.tipBroken, self.tipError = false, nil
     f:SetScript("OnUpdate", nil)
 end
 
@@ -718,6 +756,9 @@ SlashCmdList["AUTOROLLLITE"] = function(msg)
             .. db.lootQuality .. "|r  client autoloot "
             .. ((GetCVar and GetCVar("autoLootDefault") == "1")
                 and "|cffff2020ON -- filter cannot work|r" or "|cff1eff00off|r"))
+        if A.tipError then
+            Say("|cffff2020tooltip scan disabled this session:|r |cff808080" .. A.tipError .. "|r")
+        end
         Say("last loot window: |cffffffff" .. tostring(A.lastLoot or "none yet")
             .. "|r  left |cffffffff" .. (A.lootSkipped or 0) .. "|r items this session")
         Say("last " .. #A.log .. " decisions:")

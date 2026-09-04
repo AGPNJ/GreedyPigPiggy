@@ -77,6 +77,17 @@ The WoW client is on a **separate Windows machine**, not this Mac — it's alrea
 
 The test harness stubs `GetLootSlotInfo` with exactly five returns for this reason. Do not widen it.
 
+## An error in an event handler is silent, and looks like a missing feature
+
+3.3.5 swallows Lua errors unless `/console scriptErrors 1` is set, and an error thrown inside `OnEvent` kills the **rest of that handler**. When the tooltip scan threw inside the loot filter's per-slot loop, the filter took nothing, never closed the window, and never recorded a run — so `/arl status` said "none yet" while the player picked the greys up by hand. That presents exactly like the feature being off.
+
+Rules that follow, and that the tests now enforce:
+
+- **The fragile optional thing must never sit in the load-bearing path.** `LootSlotWanted` decides on quality first and only consults the tooltip for items it is about to leave behind, since an item above the threshold is taken either way.
+- **Guard every tooltip call** (`A:Protected`). First failure reports itself in chat, names the error, and disables only the scan for the session. The quality filter keeps running.
+- **Record progress before the loop, not after it**, so `/arl status` can still say what happened when something throws midway.
+- `/arl status` is the diagnostic. It shows the autoloot cvar, the last loot window (`saw N, took N, left N`), and any recorded scan error. It says "none yet" until a corpse is actually looted on the current build, so it means nothing straight after a `/reload`.
+
 ## The loot filter needs the client's autoloot OFF
 
 `db.lootFilter` makes the addon a selective autoloot. If the client's own autoloot is enabled it has already emptied the corpse before `LOOT_OPENED` reaches us, and the filter is a silent no-op. This is the first thing to suspect when someone reports the filter doing nothing.

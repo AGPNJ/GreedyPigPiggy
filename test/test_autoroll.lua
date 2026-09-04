@@ -108,6 +108,7 @@ function tooltip:SetHyperlink(link)
     self.n = 3
 end
 function tooltip:SetLootItem(slot)
+    if self.throws then error("SetLootItem: bad argument") end
     if not self.owned then self.n = 0; return end
     local e = lootItems[slot] or {}
     TipLine("TextLeft", 1).text = "Slot" .. slot
@@ -163,6 +164,7 @@ end
 local function reset(cfg)
     chat, popupsHidden, confirmed, submitted, rolls = {}, {}, {}, {}, {}
     lootItems, looted, lootClosed = {}, {}, 0
+    tooltip.throws = false
     cvars.autoLootDefault = "0"
     inInstance, raidMembers = true, 0
     clock = clock + 300               -- push past any TTL from the last test
@@ -586,6 +588,47 @@ lootItems = { { quality = 4, itemID = 7004 } }
 fire("LOOT_OPENED", 0)
 check("master switch also stops the loot filter", #looted == 0, #looted)
 SlashCmdList["AUTOROLLLITE"]("on")
+
+print("\n-- FR-11: the quality filter survives a broken tooltip scan")
+-- 3.3.5 swallows Lua errors, so an unguarded throw inside the event handler
+-- silently killed the whole filter and left every item on the corpse for the
+-- player to pick up by hand -- which looks exactly like "it is still looting
+-- greys". The quality rules must not depend on the tooltip.
+reset({ lootFilter = true, lootQuality = 3, lootClose = true })
+tooltip.throws = true
+lootItems = {
+    { quality = 0, itemID = 7001 },   -- grey, below threshold
+    { quality = 4, itemID = 7004 },   -- epic, above threshold
+}
+fire("LOOT_OPENED", 0)
+local tookB = {}
+for _, sl in ipairs(looted) do tookB[sl] = true end
+check("grey still skipped with the tooltip throwing", not tookB[1])
+check("epic still taken with the tooltip throwing", tookB[2])
+check("loot window still closed", lootClosed == 1, lootClosed)
+-- asserted through /arl status, the same surface the user reads
+SlashCmdList["AUTOROLLLITE"]("status")
+local statusLine, sawNoneYet = nil, false
+for _, m in ipairs(chat) do
+    if string.find(m, "last loot window", 1, true) then
+        statusLine = m
+        if string.find(m, "none yet", 1, true) then sawNoneYet = true end
+    end
+end
+check("status records the run, not 'none yet'",
+    statusLine ~= nil and not sawNoneYet, tostring(statusLine))
+local reported = false
+for _, m in ipairs(chat) do if string.find(m, "tooltip scan failed", 1, true) then reported = true end end
+check("the failure is reported in chat once", reported)
+
+reset({ lootFilter = true, lootQuality = 2 })
+tooltip.throws = true
+lootItems = { { quality = 4, itemID = 7004 } }
+fire("LOOT_OPENED", 0)
+local asked = false
+for _, m in ipairs(chat) do if string.find(m, "tooltip scan failed", 1, true) then asked = true end end
+check("an item above the threshold never consults the tooltip at all", not asked)
+tooltip.throws = false
 
 print("\n-- FR-11: a filtered pickup clears its own bind popup in the open world")
 reset({ lootFilter = true, instanceOnly = true, autoConfirmBind = true })
