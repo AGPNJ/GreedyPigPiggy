@@ -33,7 +33,7 @@ The spec's §7 sketches the structure; these are the invariants that make the de
 
 - **One frame for the entire addon.** Not one per roll. It owns event registration and the `OnUpdate` tick that drains the pending queue.
 - **Never roll inside the `START_LOOT_ROLL` handler.** Decisions are enqueued and executed later (`db.delay`, default 0.75s), staggered by `db.stagger` (default 0.25s) so simultaneous drops don't burst packets.
-- **`A:Decide` must stay pure** — primitives in, roll type out, zero WoW API calls, zero side effects, no logging. It is the only part of the addon testable outside the game client.
+- **`A:Decide` must stay pure** — primitives in, roll type out, zero WoW API calls, zero side effects, no logging. It is the only part of the addon testable outside the game client. The FR-10 usability verdict is computed impurely at enqueue time and handed in as a tri-state primitive precisely to keep this true.
 - **The fallback ladder (FR-2) is mandatory.** `canNeed`/`canGreed` are false far more often than intuition suggests on this core. Never call `RollOnLoot` with an action the server flagged unavailable; resolve downward Need→Greed→(DE)→Pass.
 
 ## Conflict avoidance is a primary requirement, not polish
@@ -65,6 +65,23 @@ The WoW client is on a **separate Windows machine**, not this Mac — it's alrea
 - §8 of the spec lists 10 acceptance criteria — use them as the test plan.
 - AzerothCore configs can alter need-before-greed rules and DE availability. When `reasonNeed`/`reasonGreed` codes look wrong, dump them raw in debug mode rather than trusting wiki enums.
 
+## Two features that read the tooltip instead of the API
+
+3.3.5 cannot answer either of these questions through a function call, so both go through a hidden scanning tooltip that the addon creates lazily (`A:Tooltip`, global `AutoRollLiteScanTip`). It is ours, never Blizzard's, so FR-8 holds.
+
+- **FR-10 "can this character wear it?"** — `GetItemInfo` returns *localised* class/subclass strings and no numeric `itemClassID` on this client, so a hardcoded "Warlock → Cloth" table breaks on any non-enUS client. The client paints the failed requirement red in the tooltip; scan for a red line instead, since colour is locale-independent. Exclude the `ITEM_MIN_LEVEL` line — that requirement fixes itself. Verdict is tri-state and **`nil` (uncached) must never downgrade**.
+- **FR-11 "is this a quest item?"** — `GetLootSlotInfo` on 3.3.5 returns exactly **five** values (`texture, name, quantity, quality, locked`). There is no `isQuestItem`/`questId`; those arrived in a later expansion, and writing from modern muscle memory produces code that silently returns nil. Since quest items are white, a "skip white" filter would then break quest progress. Read `ITEM_BIND_QUEST` / `ITEM_STARTS_QUEST` off `GameTooltip:SetLootItem(slot)` instead.
+
+The test harness stubs `GetLootSlotInfo` with exactly five returns for this reason. Do not widen it.
+
+## The loot filter needs the client's autoloot OFF
+
+`db.lootFilter` makes the addon a selective autoloot. If the client's own autoloot is enabled it has already taken everything before `LOOT_OPENED` reaches us, and the filter is a silent no-op. The addon warns once per session when it sees the autoloot flag set. Unlike rolling, the filter is **not** gated by `instanceOnly` — bags fill fastest in the open world.
+
+## Playerbot inventories are out of reach
+
+Bot looting is decided server-side in mod-playerbots. `NormalLootStrategy::CanLoot` accepts anything whose `ItemUsageValue` is not `ITEM_USAGE_NONE`, and that classifier ends in a catch-all tagging any item with a sell price as `ITEM_USAGE_VENDOR`/`ITEM_USAGE_AH` — so **every grey passes under "normal"**. The other strategies only widen it. No strategy excludes greys and no config option does either. Whisper `s gray` near a vendor to sell, or `nc -loot` to stop a bot looting. No client addon can change this.
+
 ## The two "will bind it to you" popups
 
 3.3.5 shows the same `LOOT_NO_DROP` text ("Looting this item will bind it to you.") for two unrelated popups, which makes them easy to conflate when one leaks through:
@@ -81,9 +98,13 @@ They take different arguments and different clearing functions — `ConfirmLootR
 - **`db.autoPass` (default `false`)** — the spec's decision matrix says "Pass" for poor/common but never says whether to *submit* Pass or simply not act. Default is to leave the frame alone so the player still has a choice; set `autoPass on` to actively submit Pass. A blacklisted item is never rolled on either way.
 - **`SLASH_AUTOROLLLITE1`/`2` globals** — FR-8's "exactly one global" can't be honored literally; the slash API requires these. `SlashCmdList` is a Blizzard table, so indexing it adds no global.
 - **`/arl stagger <s>`** — `db.stagger` was configurable per FR-3 but had no listed command.
-- **`LOOT_BIND_CONFIRM` handling (`db.autoConfirmBind`, default `true`)** — the spec's event table stops at the roll confirmations, but the pickup-time bind popup still interrupts a dungeon clear. Scoped by `A:Allowed()` and skipped for `db.never` items, so `/arl never` still means "ask me". Turn off with `/arl bind off`.
+- **`LOOT_BIND_CONFIRM` handling (`db.autoConfirmBind`, default `true`)** — the spec's event table stops at the roll confirmations, but the pickup-time bind popup still interrupts a dungeon clear. Scoped by `A:Allowed()` and skipped for `db.never` items, so `/arl never` still means "ask me". Turn off with `/arl bind off`. One exception to the scoping: a pickup the FR-11 filter made in the last 2 seconds clears its own popup regardless, since the filter runs outside instances and would otherwise strand the popup on screen.
 - **`## IconTexture` in the TOC** — retail-only directive, silently ignored by 3.3.5. Harmless, kept for tooling.
+- **The scanning tooltip's globals** — `CreateFrame("GameTooltip", "AutoRollLiteScanTip", …, "GameTooltipTemplate")` creates `AutoRollLiteScanTip` plus its `…TextLeft<n>` children. FR-8's "exactly one global" cannot survive contact with FR-10 and FR-11; both need tooltip text, and reading it requires a named frame. Created lazily, so a session that never enables either feature never makes them.
+- **Line count** — the spec targets "under 350 lines". FR-10 and FR-11 put the file near 600. The single-file, dependency-free constraint still holds; the line target does not.
 
 ## Non-goals
 
 No item-level or stat comparison (quality tier only), no UI panel or Interface Options integration, no addon comms, no Master Loot / FFA / Round Robin handling, no retail or Classic-Era compatibility.
+
+No auto-selling and no auto-deleting: declined loot is left on the corpse, never destroyed. No reach into playerbot inventories.

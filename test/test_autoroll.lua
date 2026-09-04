@@ -33,9 +33,79 @@ function RollOnLoot(id, t) table.insert(submitted, { id = id, type = t, at = clo
 function ConfirmLootRoll(id, t) table.insert(confirmed, { id = id, type = t }) end
 
 local lootSlots, slotsConfirmed = {}, {}
-function GetLootSlotLink(slot) return lootSlots[slot] end
 function ConfirmLootSlot(slot) table.insert(slotsConfirmed, slot) end
 function StaticPopup_Hide(which) table.insert(popupsHidden, which) end
+
+------------------------------------------------------- item info / tooltip
+-- itemInfo[itemID] = { equipSlot = "INVTYPE_CHEST", red = "Plate" }
+-- red is the text of a red tooltip line, i.e. a requirement this character
+-- fails. absent itemID = not in the local cache yet.
+WorldFrame = {}
+-- forward declaration: the tooltip stub below reads it, reset() rewrites it
+local lootItems, looted, lootClosed = {}, {}, 0
+ITEM_MIN_LEVEL = "Requires Level %d"
+ITEM_BIND_QUEST = "Quest Item"
+ITEM_STARTS_QUEST = "This Item Begins a Quest"
+local itemInfo = {}
+
+local function LinkID(link) return link and tonumber(string.match(link, "item:(%d+)")) end
+
+function GetItemInfo(link)
+    local info = itemInfo[LinkID(link)]
+    if not info then return nil end
+    return "Item", link, 2, 80, 70, "Armor", "Cloth", 1, info.equipSlot or "", "tex"
+end
+
+local tipLines = {}
+local function TipLine(i)
+    if not tipLines[i] then
+        local fs = {}
+        function fs:GetText() return self.text end
+        function fs:GetTextColor() return self.r or 1, self.g or 1, self.b or 1 end
+        tipLines[i] = fs
+        _G["AutoRollLiteScanTipTextLeft" .. i] = fs
+    end
+    return tipLines[i]
+end
+
+local tooltip = { n = 0 }
+function tooltip:SetOwner() end
+function tooltip:ClearLines()
+    for i = 1, self.n do local l = TipLine(i); l.text, l.r, l.g, l.b = nil, 1, 1, 1 end
+    self.n = 0
+end
+function tooltip:SetHyperlink(link)
+    local info = itemInfo[LinkID(link)] or {}
+    TipLine(1).text = "Item"
+    local l2 = TipLine(2)
+    l2.text = info.red or "Binds when equipped"
+    if info.red then l2.r, l2.g, l2.b = 1.0, 0.1, 0.1 else l2.r, l2.g, l2.b = 1, 1, 1 end
+    self.n = 2
+end
+function tooltip:SetLootItem(slot)
+    local e = lootItems[slot] or {}
+    TipLine(1).text = "Slot" .. slot
+    TipLine(2).text = e.quest
+    self.n = e.quest and 2 or 1
+end
+function tooltip:NumLines() return self.n end
+
+---------------------------------------------------------------- corpse loot
+-- lootItems[slot] = { coin =, quality =, itemID =, quest =, locked = }
+function GetNumLootItems() return #lootItems end
+function GetLootSlotInfo(slot)
+    local e = lootItems[slot]
+    if not e then return nil end
+    return "tex", "Slot" .. slot, 1, e.quality, e.locked
+end
+function GetLootSlotLink(slot)
+    local e = lootItems[slot]
+    if e then return e.itemID and ("|Hitem:" .. e.itemID .. ":0|h[Slot" .. slot .. "]|h") or nil end
+    return lootSlots[slot]
+end
+function LootSlotIsCoin(slot) return lootItems[slot] and lootItems[slot].coin end
+function LootSlot(slot) table.insert(looted, slot) end
+function CloseLoot() lootClosed = lootClosed + 1 end
 
 function hooksecurefunc(name, hook)
     local orig = _G[name]
@@ -45,7 +115,10 @@ end
 local frame = { scripts = {}, events = {} }
 function frame:RegisterEvent(e) self.events[e] = true end
 function frame:SetScript(k, fn) self.scripts[k] = fn end
-function CreateFrame() return frame end
+function CreateFrame(kind, name, parent, template)
+    if template == "GameTooltipTemplate" then return tooltip end
+    return frame
+end
 
 ----------------------------------------------------------------- test drivers
 local function fire(event, a, b) frame.scripts.OnEvent(frame, event, a, b) end
@@ -63,6 +136,7 @@ end
 
 local function reset(cfg)
     chat, popupsHidden, confirmed, submitted, rolls = {}, {}, {}, {}, {}
+    lootItems, looted, lootClosed = {}, {}, 0
     inInstance, raidMembers = true, 0
     clock = clock + 300               -- push past any TTL from the last test
     fire("PLAYER_ENTERING_WORLD")
@@ -342,11 +416,139 @@ advance(3)
 check("pending queue cleared on zone/reload", #submitted == 0, #submitted)
 check("config survives", AutoRollLiteDB.needQuality == 3 and AutoRollLiteDB.instanceOnly == true)
 
+print("\n-- FR-10: usable-gear-only rolling")
+reset({ usableOnly = false })
+itemInfo[6001] = { equipSlot = "INVTYPE_CHEST", red = "Plate" }
+itemInfo[6002] = { equipSlot = "INVTYPE_CHEST" }
+itemInfo[6003] = { equipSlot = "INVTYPE_CHEST", red = "Requires Level 80" }
+drop(200, 2, { itemID = 6001 })
+advance(2)
+check("off-class green still Greeded with the check off", only(200)[1] == 2, only(200)[1])
+
+reset({ usableOnly = true })
+drop(201, 2, { itemID = 6001 })
+advance(2)
+check("off-class green passed when usable-only is on", #submitted == 0, #submitted)
+
+reset({ usableOnly = true })
+drop(202, 3, { itemID = 6001 })
+advance(2)
+check("off-class blue downgraded Need -> Greed", only(202)[1] == 2, only(202)[1])
+
+reset({ usableOnly = true })
+drop(203, 2, { itemID = 6002 })
+advance(2)
+check("on-class green still Greeded", only(203)[1] == 2, only(203)[1])
+
+reset({ usableOnly = true })
+drop(204, 2, { itemID = 6003 })
+advance(2)
+check("red 'Requires Level' line is not treated as unusable", only(204)[1] == 2, only(204)[1])
+
+reset({ usableOnly = true })
+drop(205, 2, { itemID = 6099 })          -- not in the item cache at all
+advance(2)
+check("uncached item is not downgraded", only(205)[1] == 2, only(205)[1])
+
+reset({ usableOnly = true })
+SlashCmdList["AUTOROLLLITE"]("always 6001 1")
+drop(206, 2, { itemID = 6001 })
+advance(2)
+check("whitelist outranks the usability check", only(206)[1] == 1, only(206)[1])
+SlashCmdList["AUTOROLLLITE"]("clear")
+
+reset({ usableOnly = true })
+itemInfo[6004] = { red = "Plate" }       -- red line but no equip slot: not gear
+drop(207, 2, { itemID = 6004 })
+advance(2)
+check("non-equippable item skips the tooltip scan", only(207)[1] == 2, only(207)[1])
+AutoRollLiteDB.usableOnly = false
+
+print("\n-- FR-11: corpse loot filter")
+reset({ lootFilter = false })
+lootItems = { { quality = 0, itemID = 7001 }, { quality = 3, itemID = 7002 } }
+fire("LOOT_OPENED", 0)
+check("filter off leaves the loot window alone", #looted == 0 and lootClosed == 0, #looted)
+
+reset({ lootFilter = true, lootQuality = 2 })
+lootItems = {
+    { coin = true },                       -- 1 money
+    { quality = 0, itemID = 7001 },        -- 2 grey
+    { quality = 1, itemID = 7002 },        -- 3 white
+    { quality = 2, itemID = 7003 },        -- 4 green
+    { quality = 4, itemID = 7004 },        -- 5 epic
+    { quality = 1, itemID = 7005, quest = "Quest Item" },        -- 6 white quest item
+    { quality = 1, itemID = 7006, quest = "This Item Begins a Quest" },  -- 7 quest starter
+}
+fire("LOOT_OPENED", 0)
+local tookSlot = {}
+for _, sl in ipairs(looted) do tookSlot[sl] = true end
+check("money always taken", tookSlot[1])
+check("grey left on the corpse", not tookSlot[2])
+check("white left on the corpse", not tookSlot[3])
+check("green taken", tookSlot[4])
+check("epic taken", tookSlot[5])
+check("white quest item taken anyway", tookSlot[6])
+check("white quest starter taken anyway", tookSlot[7])
+check("took exactly five slots", #looted == 5, #looted)
+check("loot window closed once", lootClosed == 1, lootClosed)
+
+reset({ lootFilter = true, lootQuality = 3 })
+lootItems = { { quality = 2, itemID = 7003 }, { quality = 3, itemID = 7004 } }
+fire("LOOT_OPENED", 0)
+check("lootq 3 leaves greens behind too", #looted == 1 and looted[1] == 2, #looted)
+
+reset({ lootFilter = true, lootQuality = 2 })
+SlashCmdList["AUTOROLLLITE"]("never 7004")
+SlashCmdList["AUTOROLLLITE"]("always 7001 2")
+lootItems = { { quality = 0, itemID = 7001 }, { quality = 4, itemID = 7004 } }
+fire("LOOT_OPENED", 0)
+check("whitelisted grey is taken", looted[1] == 1 or looted[2] == 1)
+check("blacklisted epic is left", not (looted[1] == 2 or looted[2] == 2))
+SlashCmdList["AUTOROLLLITE"]("clear")
+
+reset({ lootFilter = true, lootQuality = 2 })
+lootItems = { { quality = 2, itemID = 7003, locked = 1 } }
+fire("LOOT_OPENED", 0)
+check("locked slot skipped", #looted == 0, #looted)
+
+reset({ lootFilter = true, lootQuality = 2, lootClose = false })
+lootItems = { { quality = 4, itemID = 7004 } }
+fire("LOOT_OPENED", 0)
+check("window left open when lootshut is off", lootClosed == 0, lootClosed)
+
+reset({ lootFilter = true, lootQuality = 2 })
+lootItems = { { quality = 4, itemID = 7004 } }
+fire("LOOT_OPENED", 1)
+local warned = false
+for _, m in ipairs(chat) do if string.find(m, "autoloot is on", 1, true) then warned = true end end
+check("warns when the client's own autoloot is enabled", warned)
+
+reset({ lootFilter = true })
+SlashCmdList["AUTOROLLLITE"]("off")
+lootItems = { { quality = 4, itemID = 7004 } }
+fire("LOOT_OPENED", 0)
+check("master switch also stops the loot filter", #looted == 0, #looted)
+SlashCmdList["AUTOROLLLITE"]("on")
+
+print("\n-- FR-11: a filtered pickup clears its own bind popup in the open world")
+reset({ lootFilter = true, instanceOnly = true, autoConfirmBind = true })
+slotsConfirmed = {}
+inInstance = false
+lootItems = { { quality = 4, itemID = 7004 } }
+fire("LOOT_OPENED", 0)
+fire("LOOT_BIND_CONFIRM", 1)
+check("bind popup cleared for a filter-initiated pickup", slotsConfirmed[1] == 1, slotsConfirmed[1])
+inInstance = true
+AutoRollLiteDB.lootFilter = false
+
 print("\n-- slash surface does not error")
 reset()
 local cmds = { "", "help", "status", "need 4", "greed 3", "delay 2", "stagger 0.5",
     "instance off", "instance on", "raid on", "raid off", "bop on", "bop off",
     "de on", "de off", "autopass on", "autopass off", "quiet on", "quiet off",
+    "loot on", "loot off", "lootshut on", "lootshut off", "usable on", "usable off",
+    "lootq 3", "lootq 2", "lootq 99",
     "debug on", "debug off", "never", "always 5", "need 99", "delay 99", "bogus" }
 local allOk = true
 for _, c in ipairs(cmds) do

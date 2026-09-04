@@ -21,9 +21,13 @@ local PREFIX = PIGGY .. "|cffff77c8AutoRoll|r "
 local TICK, ROLL_TTL, EXT_TTL = 0.1, 65, 120
 
 local defaults = {
-    version = 1, enabled = true,
+    version = 2, enabled = true,
     needQuality = 3, greedQuality = 2,      -- min quality for Need / Greed
     delay = 0.75, stagger = 0.25,
+    usableOnly = false,                     -- FR-10: downgrade gear this class cannot wear
+    lootFilter = false,                     -- FR-11: filter the corpse loot window by quality
+    lootQuality = 2,                        -- FR-11: min quality to pick up (2 = skip grey/white)
+    lootClose = true,                       -- close the window once we have taken our picks
     instanceOnly = true, raidEnabled = false,
     bopProtection = false, allowDisenchant = false,
     autoPass = false,                       -- submit Pass, or leave frame to user
@@ -38,6 +42,9 @@ local TOGGLES = {
     bop      = { "bopProtection",   "BoP protection" },
     de       = { "allowDisenchant", "disenchant fallback" },
     autopass = { "autoPass",        "auto-submit Pass" },
+    usable   = { "usableOnly",      "usable-gear-only rolling" },
+    loot     = { "lootFilter",      "corpse loot filter" },
+    lootshut = { "lootClose",       "close loot window after filtering" },
     bind     = { "autoConfirmBind", "auto-confirm bind popup" },
     quiet    = { "quiet",           "quiet mode" },
     debug    = { "debug",           "debug logging" },
@@ -54,6 +61,9 @@ A.log      = {}     -- ring buffer, last 20 decisions
 A.inFlight = false
 A.tick     = 0
 A.lastFire = 0
+A.lastFilterLoot = 0     -- FR-11: timestamp of the last slot the filter looted
+A.lootSkipped    = 0     -- FR-11: running count of items left on corpses
+A.warnedAutoLoot = false
 
 local function Say(msg) DEFAULT_CHAT_FRAME:AddMessage(PREFIX .. msg) end
 
@@ -73,20 +83,30 @@ end
      piece that can be reasoned about and tested without logging into the game.
      Returns rollType (0-3) and a short reason string.                       ]]
 
-function A:Decide(quality, canNeed, canGreed, canDisenchant, bop, itemID)
+function A:Decide(quality, canNeed, canGreed, canDisenchant, bop, itemID, usable)
     local db = self.db
     if quality == nil then return PASS, "no quality" end
     if itemID and db.never[itemID] then return PASS, "blacklisted" end
 
-    local want, why
+    local want, why, forced
     if itemID and db.always[itemID] then
-        want, why = db.always[itemID], "whitelisted"
+        want, why, forced = db.always[itemID], "whitelisted", true
     elseif quality >= db.needQuality then
         want, why = NEED, "quality " .. quality
     elseif quality >= db.greedQuality then
         want, why = GREED, "quality " .. quality
     else
         want, why = PASS, "quality " .. quality
+    end
+
+    -- FR-10: gear this class cannot equip drops one step -- Need becomes Greed
+    -- (an unusable blue is still worth gold or a shard), Greed becomes Pass so
+    -- off-class greens stop filling the bags. usable == nil means "unknown"
+    -- (item not cached yet); unknown never downgrades. A whitelisted item is an
+    -- explicit instruction and outranks this.
+    if db.usableOnly and usable == false and not forced then
+        if want == NEED then want, why = GREED, "not usable by class"
+        elseif want == GREED then want, why = PASS, "not usable by class" end
     end
 
     -- FR-7: BoP protection downgrades Need before the ladder runs.
@@ -105,6 +125,67 @@ function A:Decide(quality, canNeed, canGreed, canDisenchant, bop, itemID)
         end
     end
     return want, why
+end
+
+--[[ FR-10 : "can this character actually wear it?"
+
+     3.3.5 has no API that answers this directly, and GetItemInfo's class and
+     subclass strings are localised, so a hardcoded "Warlock -> Cloth" table
+     would break on any non-enUS client. The client already knows the answer
+     and paints it red in the tooltip, so read that instead: build our own
+     hidden tooltip (never Blizzard's -- FR-8), set the item link on it, and
+     look for a red line. Colour is locale-independent.
+
+     Returns true / false / nil, where nil means "cannot tell" -- the item is
+     not in the local cache yet, or the check is switched off.               ]]
+
+local LEVELPAT
+
+local function IsLevelRequirement(text)
+    if not LEVELPAT then
+        local raw = ITEM_MIN_LEVEL or "Requires Level %d"
+        raw = string.gsub(raw, "([%^%$%(%)%.%[%]%*%+%-%?])", "%%%1")
+        -- "%d" in the subject must become the pattern "%d+"; the pattern that
+        -- matches a literal percent is "%%", so this is "%%d", not "%%%%d".
+        LEVELPAT = string.gsub(raw, "%%d", "%%d+")
+    end
+    return string.find(text, LEVELPAT) ~= nil
+end
+
+function A:Tooltip()
+    if not self.tip then
+        self.tip = CreateFrame("GameTooltip", "AutoRollLiteScanTip", nil, "GameTooltipTemplate")
+        self.tip:SetOwner(WorldFrame, "ANCHOR_NONE")
+    end
+    return self.tip
+end
+
+function A:Usable(link)
+    if not self.db.usableOnly or not link then return nil end
+
+    local name, _, _, _, _, _, _, _, equipSlot = GetItemInfo(link)
+    if not name then return nil end                      -- not cached yet
+    if not equipSlot or equipSlot == "" then return true end   -- not gear at all
+
+    local tip = self:Tooltip()
+    tip:ClearLines()
+    tip:SetHyperlink(link)
+
+    for i = 2, (tip:NumLines() or 0) do
+        local fs = _G["AutoRollLiteScanTipTextLeft" .. i]
+        local text = fs and fs:GetText()
+        if text and text ~= "" then
+            local r, g, b = fs:GetTextColor()
+            -- red line == a requirement this character fails. "Requires Level"
+            -- is excluded: that one fixes itself, and a levelling character
+            -- should still roll on gear it will wear in two bars' time.
+            if r and r > 0.9 and g and g < 0.2 and b and b < 0.2 and not IsLevelRequirement(text) then
+                self:Debug("unusable (" .. text .. "): " .. link)
+                return false
+            end
+        end
+    end
+    return true
 end
 
 --[[ FR-7 : scope gating ---------------------------------------------------]]
@@ -142,8 +223,9 @@ function A:Enqueue(rollID)
     canNeed, canGreed = canNeed and true or false, canGreed and true or false
     canDisenchant, bop = canDisenchant and true or false, bop and true or false
 
+    local usable = self:Usable(link)
     local action, reason = self:Decide(quality, canNeed, canGreed, canDisenchant,
-        bop, ItemIDFromLink(link))
+        bop, ItemIDFromLink(link), usable)
 
     local now = GetTime()
     local fire = now + self.db.delay
@@ -152,7 +234,7 @@ function A:Enqueue(rollID)
 
     self.pending[rollID] = { quality = quality, action = action, reason = reason,
         link = link, name = name, hadLink = link and true or false,
-        queuedAt = now, fireAt = fire }
+        usable = usable, queuedAt = now, fireAt = fire }
 
     self:Debug(string.format("queue %d q=%d need=%s(%s) greed=%s(%s) de=%s(%s) bop=%s -> %s (%s) in %.2fs",
         rollID, quality, tostring(canNeed), tostring(rNeed), tostring(canGreed), tostring(rGreed),
@@ -181,7 +263,7 @@ function A:Execute(rollID, e)
         if link then
             action, reason = self:Decide(quality, canNeed and true or false,
                 canGreed and true or false, canDisenchant and true or false,
-                bop and true or false, ItemIDFromLink(link))
+                bop and true or false, ItemIDFromLink(link), self:Usable(link))
             if action ~= e.action then
                 self:Debug("late link re-decided roll " .. rollID .. " -> " .. ROLLNAME[action])
             end
@@ -275,8 +357,14 @@ end
 function A:ConfirmBind(slot)
     if not self.db.autoConfirmBind then return end
 
+    -- FR-11: a BoP item the loot filter just took raises this popup wherever we
+    -- are, so a filter-initiated pickup clears its own popup even when
+    -- instanceOnly would otherwise gate us out. Without this the popup parks
+    -- itself on screen and the grind stops at the first open-world BoP drop.
     local ok, why = self:Allowed()
-    if not ok then return self:Debug("bind popup left alone (" .. why .. ")") end
+    if not ok and GetTime() - self.lastFilterLoot > 2 then
+        return self:Debug("bind popup left alone (" .. why .. ")")
+    end
 
     local link = GetLootSlotLink(slot)
     local itemID = ItemIDFromLink(link)
@@ -289,6 +377,95 @@ function A:ConfirmBind(slot)
     StaticPopup_Hide("LOOT_BIND")
     self:Record(nil, what, "bind confirmed")
     if not self.db.quiet then Say("|cffffd100bind confirmed|r on " .. what) end
+end
+
+--[[ FR-11 : corpse loot filter
+
+     The 3.3.5 client's own autoloot is all-or-nothing, so grinding fills the
+     bags with vendor trash. With db.lootFilter on we become a selective
+     autoloot: walk the slots on LOOT_OPENED, take what clears db.lootQuality,
+     leave the rest on the corpse.
+
+     Deliberately NOT scoped by instanceOnly -- bags fill fastest out in the
+     world, which is exactly where that gate would switch this off.
+
+     Only the loot API is touched (GetLootSlotInfo / LootSlot / CloseLoot).
+     LootFrame itself is never read, hidden or hooked, per FR-8.
+
+     Requires the client's own autoloot to be OFF -- if it is on, the client
+     has already taken everything before this event reaches us.             ]]
+
+--[[ Quest items are white, so a naive "skip white" filter would silently
+     break quest progress. 3.3.5's GetLootSlotInfo returns only five values --
+     texture, name, quantity, quality, locked -- with no isQuestItem flag (that
+     arrived in a later expansion), so the flag cannot be read directly. The
+     tooltip does carry it, and GameTooltip:SetLootItem(slot) exists on this
+     client, so scan for the two marker lines on our own hidden tooltip.     ]]
+
+function A:IsQuestLoot(slot)
+    local tip = self:Tooltip()
+    tip:ClearLines()
+    tip:SetLootItem(slot)
+    local bind, starts = ITEM_BIND_QUEST or "Quest Item",
+                         ITEM_STARTS_QUEST or "This Item Begins a Quest"
+    for i = 1, (tip:NumLines() or 0) do
+        local fs = _G["AutoRollLiteScanTipTextLeft" .. i]
+        local text = fs and fs:GetText()
+        if text == bind or text == starts then return true end
+    end
+    return false
+end
+
+function A:LootSlotWanted(slot)
+    local db = self.db
+
+    if LootSlotIsCoin and LootSlotIsCoin(slot) then return true, "coin" end
+
+    local _, _, _, quality, locked = GetLootSlotInfo(slot)
+    if locked then return false, "locked" end
+    if self:IsQuestLoot(slot) then return true, "quest item" end
+
+    local itemID = ItemIDFromLink(GetLootSlotLink(slot))
+    if itemID and db.never[itemID]  then return false, "blacklisted" end
+    if itemID and db.always[itemID] then return true, "whitelisted" end
+
+    if quality == nil then return true, "unknown quality" end
+    if quality >= db.lootQuality then return true, "quality " .. quality end
+    return false, "quality " .. quality
+end
+
+function A:LootOpened(autoLoot)
+    local db = self.db
+    if not db.enabled or not db.lootFilter then return end
+
+    if autoLoot and autoLoot ~= 0 and not self.warnedAutoLoot then
+        self.warnedAutoLoot = true
+        Say("|cffff2020loot filter cannot work while the client's own autoloot is on.|r")
+        Say("|cff808080turn it off in Interface > Controls, or /console autoLootDefault 0|r")
+    end
+
+    local n = GetNumLootItems()
+    if not n or n == 0 then return end
+
+    local took, left = 0, 0
+    -- backwards: looting a slot can renumber the ones after it
+    for slot = n, 1, -1 do
+        local want, why = self:LootSlotWanted(slot)
+        if want then
+            self.lastFilterLoot = GetTime()
+            LootSlot(slot)
+            took = took + 1
+        else
+            left = left + 1
+            self:Debug("skipped loot slot " .. slot .. " (" .. why .. ")")
+        end
+    end
+
+    -- Deliberately not a chat line: on a grind this fires once per corpse.
+    -- The running total is available from /arl status instead.
+    self.lootSkipped = (self.lootSkipped or 0) + left
+    if db.lootClose then CloseLoot() end
+    self:Debug("loot filter took " .. took .. ", left " .. left)
 end
 
 --[[ config ----------------------------------------------------------------]]
@@ -308,6 +485,7 @@ end
 function A:Reset()
     wipe(self.pending); wipe(self.ours); wipe(self.external)
     self.inFlight, self.lastFire, self.tick = false, 0, 0
+    self.lastFilterLoot = 0
     f:SetScript("OnUpdate", nil)
 end
 
@@ -319,6 +497,7 @@ f:RegisterEvent("START_LOOT_ROLL")
 f:RegisterEvent("CONFIRM_LOOT_ROLL")
 f:RegisterEvent("CONFIRM_DISENCHANT_ROLL")
 f:RegisterEvent("LOOT_BIND_CONFIRM")
+f:RegisterEvent("LOOT_OPENED")
 
 f:SetScript("OnEvent", function(self, event, arg1, arg2)
     if event == "START_LOOT_ROLL" then
@@ -327,6 +506,8 @@ f:SetScript("OnEvent", function(self, event, arg1, arg2)
         A:Confirm(arg1, arg2, event)
     elseif event == "LOOT_BIND_CONFIRM" then
         A:ConfirmBind(arg1)
+    elseif event == "LOOT_OPENED" then
+        A:LootOpened(arg1)
     elseif event == "PLAYER_ENTERING_WORLD" then
         A:Reset()
     elseif event == "ADDON_LOADED" and arg1 == ADDON then
@@ -357,6 +538,8 @@ function A:PrintConfig()
     Say("master " .. OnOff(db.enabled) .. "  need>=|cffffffff" .. db.needQuality
         .. "|r  greed>=|cffffffff" .. db.greedQuality .. "|r  delay |cffffffff"
         .. db.delay .. "s|r  stagger |cffffffff" .. db.stagger .. "s|r")
+    Say("loot filter " .. OnOff(db.lootFilter) .. "  pick up quality >=|cffffffff"
+        .. db.lootQuality .. "|r  usable-only " .. OnOff(db.usableOnly))
     local parts = {}
     for cmd, t in pairs(TOGGLES) do table.insert(parts, cmd .. " " .. OnOff(db[t[1]])) end
     table.sort(parts)
@@ -382,18 +565,19 @@ SlashCmdList["AUTOROLLLITE"] = function(msg)
 
     elseif cmd == "" or cmd == "help" then
         A:PrintConfig()
-        Say("|cff808080on|off, need <q>, greed <q>, delay <s>, stagger <s>, never [id],|r")
-        Say("|cff808080always <id> <1|2|3>, clear, status, and toggles: |r"
-            .. "|cff808080instance raid bop de autopass bind quiet debug|r")
+        Say("|cff808080on|off, need <q>, greed <q>, lootq <q>, delay <s>, stagger <s>,|r")
+        Say("|cff808080never [id], always <id> <1|2|3>, clear, status, and toggles:|r")
+        Say("|cff808080instance raid bop de autopass bind loot lootshut usable quiet debug|r")
 
     elseif cmd == "on" or cmd == "off" then
         db.enabled = (cmd == "on")
         Say("master switch " .. OnOff(db.enabled))
 
-    elseif cmd == "need" or cmd == "greed" then
+    elseif cmd == "need" or cmd == "greed" or cmd == "lootq" then
         local q = tonumber(a1)
+        local key = (cmd == "lootq") and "lootQuality" or (cmd .. "Quality")
         if q and q >= 0 and q <= 7 then
-            db[cmd .. "Quality"] = q
+            db[key] = q
             Say(cmd .. " minimum quality set to |cffffffff" .. q .. "|r")
         else Say("usage: /arl " .. cmd .. " <0-7>") end
 
@@ -429,6 +613,9 @@ SlashCmdList["AUTOROLLLITE"] = function(msg)
             Say(string.format("pending %d: %s in %.2fs", rollID, ROLLNAME[e.action] or "?", e.fireAt - now))
         end
         if n == 0 then Say("pending queue empty") end
+        if db.lootFilter then
+            Say("loot filter has left |cffffffff" .. (A.lootSkipped or 0) .. "|r items on corpses this session")
+        end
         Say("last " .. #A.log .. " decisions:")
         for i = 1, #A.log do DEFAULT_CHAT_FRAME:AddMessage("  " .. A.log[i]) end
 

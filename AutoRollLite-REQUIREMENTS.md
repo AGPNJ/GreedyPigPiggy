@@ -145,6 +145,42 @@ This is a primary requirement, not a nice-to-have. The addon must be provably in
 - Clear `ours`, `externalRolls`, and the pending queue on `PLAYER_ENTERING_WORLD`.
 - Cap `externalRolls` growth: prune entries older than 120s on each queue tick.
 
+### FR-10: Usable-gear-only rolling (`db.usableOnly`, default off)
+
+Off-class gear is the main source of bag clutter on a grinding character. When enabled, an item this character cannot equip drops one step down the desired-action scale **before** the FR-2 ladder runs:
+
+| Desired | Unusable becomes |
+|---|---|
+| Need | Greed |
+| Greed | Pass |
+
+An unusable blue is still worth gold or a shard, so it keeps a Greed. An off-class green becomes a Pass and stops entering the bags at all.
+
+Determining usability:
+
+- 3.3.5 has **no API that answers this**. `GetItemInfo`'s class and subclass fields are localised display strings, and numeric `itemClassID` does not exist on this client, so any hardcoded class-to-armour table would break on a non-enUS client.
+- The client already knows the answer and paints the failed requirement **red** in the tooltip. Read that: own hidden tooltip (never Blizzard's — FR-8), `SetHyperlink(link)`, scan for a line coloured red (`r > 0.9, g < 0.2, b < 0.2`). Colour is locale-independent.
+- Exclude the `ITEM_MIN_LEVEL` ("Requires Level %d") line. That requirement fixes itself, and a levelling character should still roll on gear it will wear shortly.
+- Tri-state result: `true` / `false` / `nil`. `nil` means *cannot tell* — the item is not in the local cache yet, or the check is off. **`nil` never downgrades.**
+- Items with no equip slot (mats, consumables, recipes) are usable by definition and skip the scan.
+- A whitelisted item (FR-6) is an explicit instruction and outranks this check.
+
+Usability is computed impurely at enqueue time and passed into `A:Decide` as a primitive, preserving the purity invariant. It is recomputed if a late link resolves (FR-5).
+
+### FR-11: Corpse loot filter (`db.lootFilter`, default off)
+
+The client's own autoloot is all-or-nothing, so grinding fills the bags with vendor trash. When enabled, on `LOOT_OPENED` walk the slots and take only what clears `db.lootQuality` (default 2 — skips grey and white), leaving the rest on the corpse.
+
+- **Requires the client's own autoloot to be OFF.** If it is on, the client has already taken everything before the event reaches us. Warn once in chat when `LOOT_OPENED` reports autoloot is enabled.
+- Iterate **backwards** from `GetNumLootItems()`; looting a slot can renumber the ones after it.
+- Always taken: coins (`LootSlotIsCoin`), quest items, whitelisted items.
+- Never taken: blacklisted items, locked slots.
+- **Quest items are white.** A naive "skip white" rule silently breaks quest progress. 3.3.5's `GetLootSlotInfo` returns only five values — `texture, name, quantity, quality, locked` — with **no `isQuestItem` flag**; that arrived in a later expansion. The flag must be read from the tooltip instead: `GameTooltip:SetLootItem(slot)` exists on this client, so scan the hidden tooltip for `ITEM_BIND_QUEST` ("Quest Item") or `ITEM_STARTS_QUEST` ("This Item Begins a Quest").
+- `db.lootClose` (default on) closes the window afterwards so an unattended grind continues.
+- Deliberately **not** scoped by `instanceOnly`: bags fill fastest out in the world, which is exactly where that gate would switch this off. `db.enabled` still governs it.
+- Only the loot API is touched (`GetNumLootItems` / `GetLootSlotInfo` / `GetLootSlotLink` / `LootSlot` / `CloseLoot`). `LootFrame` itself is never read, hidden or hooked, per FR-8.
+- A BoP item the filter picks up raises `LOOT_BIND_CONFIRM` wherever the player is. A pickup initiated by the filter within the last 2 seconds clears its own popup even when `instanceOnly` would gate the handler out, otherwise the popup parks on screen and the grind stops at the first open-world BoP drop.
+
 ---
 
 ## 4. Configuration & Commands
@@ -163,6 +199,10 @@ Slash commands under `/arl` (and alias `/autoroll`):
 /arl raid on|off           -- allow in raid groups
 /arl bop on|off            -- BoP protection
 /arl de on|off             -- allow disenchant fallback
+/arl usable on|off         -- FR-10: downgrade gear this class cannot equip
+/arl loot on|off           -- FR-11: corpse loot filter
+/arl lootq <quality>       -- FR-11: minimum quality to pick up (default 2)
+/arl lootshut on|off       -- FR-11: close the loot window after filtering
 /arl never <itemID>        -- blacklist
 /arl always <itemID> <1|2> -- force need(1)/greed(2)
 /arl clear                 -- clear both lists
@@ -260,7 +300,9 @@ Keep `A:Decide` free of side effects and of any WoW API calls — it takes primi
 
 ## 10. Explicit Non-Goals
 
-- No loot-value logic, no item-level comparison, no stat weighting. Quality tier only.
+- No loot-value logic, no item-level comparison, no stat weighting. Quality tier only. FR-10 asks only "can this character equip it at all", never "is it an upgrade".
+- No auto-selling and no auto-deleting. Items the filter declines are left on the corpse, never destroyed.
+- No control over playerbot inventories. Bot looting is server-side (mod-playerbots `LootStrategy`); no client addon can reach it.
 - No UI panel, no Interface Options integration. Slash commands only.
 - No group/raid coordination, no addon comms (`SendAddonMessage`).
 - No handling of Master Loot, Free-For-All, or Round Robin — those don't generate `START_LOOT_ROLL`.
